@@ -121,11 +121,20 @@ godgame --screenshot out.bmp [frames] [far|close|village|night]
 
 ## Roadmap
 
-- More miracles (rain/water, fire, wood) and gesture casting
-- A second village and inter-village dynamics
-- Villager mortality (throws, drowning, starvation — seams already in place)
-- Loaders for original Black & White data files (terrain, meshes, textures)
-- Sound
+The full arc to the real game — **skirmish against AI gods on handcrafted
+maps**, won by converting villages until the enemy temple falls — is laid out
+in [docs/plan-game.md](docs/plan-game.md). The short version:
+
+1. Scaffolds & the buildable village (workshops craft scaffolds; combine
+   1-7 and place them: abodes, store, crèche, graveyard, field, village
+   center, miracle dispenser, wonder)
+2. Mortality & burial (population becomes a real resource)
+3. Many villages (neutrals, the big multi-village refactor)
+4. Gods & conversion (per-god belief, the ownership ratchet)
+5. The rival AI god (fully symmetric, an embodied enemy hand)
+6. In-game map editor → 7. skirmish shell → 8. balance — then story mode
+
+Also on the list: more miracles, original B&W asset loaders, sound.
 
 ## Layout
 
