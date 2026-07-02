@@ -98,10 +98,25 @@ int nearestProp(const World& w, const Villager& v, int selfIdx, Pred pred) {
 int openBuildSite(const World& w) {
   for (std::size_t i = 0; i < w.village.buildings.size(); ++i) {
     const Building& b = w.village.buildings[i];
-    if (b.type == BuildingType::House && b.stage >= 0 && b.stage < 3)
+    if (b.stage >= 0 && b.stage < 3) return static_cast<int>(i);
+  }
+  return -1;
+}
+
+int completedWorkshop(const World& w) {
+  for (std::size_t i = 0; i < w.village.buildings.size(); ++i) {
+    const Building& b = w.village.buildings[i];
+    if (b.type == BuildingType::Workshop && b.stage == 3)
       return static_cast<int>(i);
   }
   return -1;
+}
+
+int looseScaffoldCount(const World& w) {
+  int n = 0;
+  for (const Prop& p : w.props)
+    if (p.alive && p.type == PropType::Scaffold && !p.held && p.carrier < 0) ++n;
+  return n;
 }
 
 int spawnCarried(World& w, Villager& v, int selfIdx, PropType type, float meals) {
@@ -186,7 +201,8 @@ void planFarmer(World& w, int i) {
     return;
   }
   v.state = VState::Wander;
-  v.moveTarget = w.village.fieldCenter;
+  v.moveTarget = w.village.fields.empty() ? xz(w.village.center)
+                                          : w.village.fields[0].center;
 }
 
 void planFisherman(World& w, int i) {
@@ -242,6 +258,16 @@ void planBuilder(World& w, int i) {
   int site = openBuildSite(w);
   if (site < 0) {
     dropCargo(w, v);
+    // No construction to serve: work the workshop bench, crafting scaffolds,
+    // as long as there's wood and the yard isn't already full of them.
+    int shop = completedWorkshop(w);
+    if (shop >= 0 && w.village.wood >= tune::kScaffoldWoodCost &&
+        looseScaffoldCount(w) < tune::kMaxLooseScaffolds) {
+      v.targetBuilding = shop;
+      v.state = VState::GoTo;
+      v.moveTarget = xz(w.village.buildings[shop].pos);
+      return;
+    }
     v.state = VState::Wander;
     v.moveTarget = xz(w.village.storagePos());
     return;
@@ -297,7 +323,9 @@ void validateJob(World& w, int i) {
   }
   if (v.targetBuilding >= 0) {
     const Building& b = w.village.buildings[v.targetBuilding];
-    if (v.job == Job::Builder && (b.stage < 0 || b.stage >= 3)) {
+    // A completed Workshop is a valid destination - that's a crafting trip.
+    bool crafting = b.type == BuildingType::Workshop && b.stage == 3;
+    if (v.job == Job::Builder && !crafting && (b.stage < 0 || b.stage >= 3)) {
       releaseClaims(w, v, i);
       v.state = VState::Idle;
       v.stateTimer = 0.4f;
@@ -366,7 +394,12 @@ void arriveAtTarget(World& w, int i) {
       } else if (v.targetBuilding >= 0) {
         Building& b = w.village.buildings[v.targetBuilding];
         bool atSite = glm::distance(xz(b.pos), xz(v.pos)) < 4.0f;
-        if (atSite) {
+        if (atSite && b.type == BuildingType::Workshop && b.stage == 3) {
+          // Crafting a scaffold at the bench.
+          v.yaw = std::atan2(b.pos.x - v.pos.x, b.pos.z - v.pos.z);
+          v.state = VState::Work;
+          v.workTimer = tune::kScaffoldCraftSeconds;
+        } else if (atSite) {
           v.yaw = std::atan2(b.pos.x - v.pos.x, b.pos.z - v.pos.z);
           v.state = VState::Work;  // deliver or hammer (decided on completion)
           v.workTimer = v.carriedProp >= 0 ? tune::kDepositSeconds : 0.45f;
@@ -488,6 +521,32 @@ void workCycleComplete(World& w, int i) {
   if (v.job == Job::Builder && v.targetBuilding >= 0) {
     Building& b = w.village.buildings[v.targetBuilding];
     bool atSite = glm::distance(xz(b.pos), xz(v.pos)) < 4.5f;
+    if (b.type == BuildingType::Workshop && b.stage == 3 && atSite) {
+      // A scaffold comes off the bench.
+      if (w.village.wood >= tune::kScaffoldWoodCost &&
+          looseScaffoldCount(w) < tune::kMaxLooseScaffolds) {
+        w.village.wood -= tune::kScaffoldWoodCost;
+        ++w.village.scaffoldsCrafted;
+        Prop s;
+        s.type = PropType::Scaffold;
+        s.scale = 1.0f;
+        s.resource = 1.0f;
+        s.radius = 0.9f + 0.18f;
+        glm::vec3 side(std::sin(b.yaw + 1.5708f), 0.0f, std::cos(b.yaw + 1.5708f));
+        s.pos = b.pos + side * 3.4f;
+        s.pos.y = 0.0f;
+        s.baseYaw = b.yaw;
+        s.rot = glm::angleAxis(b.yaw, glm::vec3(0, 1, 0));
+        s.asleep = true;
+        int idx = w.spawnProp(s);
+        w.props[idx].pos.y = w.restHeight(w.props[idx]);
+      }
+      v.targetBuilding = -1;
+      v.state = VState::Idle;
+      v.stateTimer = 0.4f;
+      v.thinkTimer = std::min(v.thinkTimer, 0.2f);
+      return;
+    }
     if (atSite && v.carriedProp >= 0) {
       // Deliver the log to the site.
       Prop& p = w.props[v.carriedProp];
@@ -998,10 +1057,26 @@ void villagersUpdate(World& world, float dt) {
           v.yaw = std::atan2(totem.pos.x - v.pos.x, totem.pos.z - v.pos.z);
           v.walkPhase += dt * 4.2f;
           if (world.temple.founded) {
-            float mult = 0.5f + 1.5f * world.village.belief;
-            world.temple.mana = std::min(
-                world.temple.manaMax,
-                world.temple.mana + tune::kManaPerWorshipperPerDay * mult * dayFrac);
+            float mult = (0.5f + 1.5f * world.village.belief) *
+                         world.village.centerManaMultiplier();
+            float add = tune::kManaPerWorshipperPerDay * mult * dayFrac;
+            float space = world.temple.manaMax - world.temple.mana;
+            if (add <= space) {
+              world.temple.mana += add;
+            } else {
+              // Pool full: the overflow charges a Miracle Dispenser instead.
+              world.temple.mana = world.temple.manaMax;
+              for (Building& b : world.village.buildings) {
+                if (b.type != BuildingType::Dispenser || b.stage != 3) continue;
+                world.village.dispenserFill += add - space;
+                while (world.village.dispenserFill >= tune::kFoodMiracleCost &&
+                       b.charges < tune::kDispenserMaxCharges) {
+                  world.village.dispenserFill -= tune::kFoodMiracleCost;
+                  ++b.charges;
+                }
+                break;
+              }
+            }
           }
           world.village.belief = std::min(
               1.0f, world.village.belief + tune::kBeliefFromWorshipPerDay * dayFrac);
@@ -1014,18 +1089,17 @@ void villagersUpdate(World& world, float dt) {
           if (b.stage >= 0 && b.stage < 3 && b.woodDelivered >= b.woodCost &&
               glm::distance(xz(b.pos), xz(v.pos)) < 4.5f) {
             b.buildProgress += dt;
-            int stage = std::min(
-                2, static_cast<int>(3.0f * b.buildProgress / tune::kHouseBuildSeconds));
+            float required = b.tier > 0
+                                 ? static_cast<float>(b.tier) * tune::kBuildSecondsPerScaffold
+                                 : tune::kHouseBuildSeconds;
+            int stage = std::min(2, static_cast<int>(3.0f * b.buildProgress / required));
             b.stage = std::max(b.stage, stage);
-            if (b.buildProgress >= tune::kHouseBuildSeconds) {
-              b.stage = 3;
-              // House up: home the homeless.
-              for (std::size_t o = 0; o < vs.size(); ++o)
-                if (vs[o].home < 0)
-                  vs[o].home = world.village.findHomeFor(static_cast<int>(o));
+            if (b.buildProgress >= required) {
+              int done = v.targetBuilding;
               v.state = VState::Idle;
               v.stateTimer = 0.5f;
               v.targetBuilding = -1;
+              world.village.onBuildingComplete(world, done);
             }
           }
         }

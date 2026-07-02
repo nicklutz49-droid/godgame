@@ -29,10 +29,20 @@ MeshData campfireFlame();        // emissive cone, night flicker
 MeshData fieldSlab(float halfX, float halfZ);
 MeshData cropCone();             // per-cell, scaled by growth
 
+// The building roster built from scaffolds.
+MeshData largeAbode();
+MeshData workshop();
+MeshData store();
+MeshData creche();
+MeshData graveyard();
+MeshData dispenser();
+MeshData wonder();
+
 // Haulable resource props.
 MeshData logProp();
 MeshData foodBundleProp();
 MeshData stumpProp();
+MeshData scaffoldProp();  // one lattice unit; stacks draw it repeatedly
 
 // Thought bubbles (emissive billboards above heads).
 MeshData bubbleHunger();

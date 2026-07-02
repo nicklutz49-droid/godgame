@@ -266,6 +266,8 @@ struct App {
   Mesh bubbleHungerMesh, bubbleSleepMesh, bubbleFearMesh;
   Mesh templeMesh, templeCrystalMesh;
   Mesh templeRing, villageRing;
+  Mesh largeAbodeMesh, workshopMesh, storeMesh, crecheMesh, graveyardMesh;
+  Mesh dispenserMesh, wonderMesh, scaffoldMesh;
   float lastVillageRingR = -1.0f;
 
   // Short-lived cast feedback (expanding gold pulse at miracle points).
@@ -274,6 +276,8 @@ struct App {
     float age;
   };
   std::vector<CastEffect> effects;
+
+  const Mesh* buildingMesh(BuildingType t);
 
   std::uint32_t seed = 20260702u;
   bool quit = false;
@@ -401,8 +405,33 @@ void App::initScene() {
   bubbleFearMesh.upload(models::bubbleFear());
   templeMesh.upload(models::temple());
   templeCrystalMesh.upload(models::templeCrystal());
+  largeAbodeMesh.upload(models::largeAbode());
+  workshopMesh.upload(models::workshop());
+  storeMesh.upload(models::store());
+  crecheMesh.upload(models::creche());
+  graveyardMesh.upload(models::graveyard());
+  dispenserMesh.upload(models::dispenser());
+  wonderMesh.upload(models::wonder());
+  scaffoldMesh.upload(models::scaffoldProp());
 
   rebuildWorld(seed);
+}
+
+// The finished look of each buildable type (ghost previews reuse this).
+const Mesh* App::buildingMesh(BuildingType t) {
+  switch (t) {
+    case BuildingType::House: return &houseStages[3];
+    case BuildingType::LargeAbode: return &largeAbodeMesh;
+    case BuildingType::Store: return &storeMesh;
+    case BuildingType::Workshop: return &workshopMesh;
+    case BuildingType::Creche: return &crecheMesh;
+    case BuildingType::Graveyard: return &graveyardMesh;
+    case BuildingType::FieldSite: return &fieldSlabMesh;
+    case BuildingType::Center: return &totemMesh;
+    case BuildingType::Dispenser: return &dispenserMesh;
+    case BuildingType::Wonder: return &wonderMesh;
+    default: return nullptr;
+  }
 }
 
 void App::rebuildWorld(std::uint32_t newSeed) {
@@ -468,7 +497,19 @@ void App::handleEvent(const SDL_Event& e) {
       }
       break;
     case SDL_MOUSEWHEEL:
-      wheelAccum += static_cast<float>(e.wheel.y);
+      // Holding a 3-stack: the wheel picks the civic building instead of zooming.
+      if (hand.heldScaffoldCount(world) == 3 && e.wheel.y != 0) {
+        static const BuildingType kCivic[4] = {
+            BuildingType::Store, BuildingType::Workshop, BuildingType::Creche,
+            BuildingType::Graveyard};
+        int cur = 0;
+        for (int k = 0; k < 4; ++k)
+          if (kCivic[k] == hand.civicChoice) cur = k;
+        cur = (cur + (e.wheel.y > 0 ? 1 : 3)) % 4;
+        hand.civicChoice = kCivic[cur];
+      } else {
+        wheelAccum += static_cast<float>(e.wheel.y);
+      }
       break;
     case SDL_KEYDOWN:
       if (e.key.repeat) break;
@@ -703,6 +744,17 @@ void App::render(float time) {
       case PropType::Log: mesh = &logMesh; break;
       case PropType::Food: mesh = &foodMesh; break;
       case PropType::Stump: mesh = &stumpMesh; break;
+      case PropType::Scaffold: {
+        // A stack draws the lattice unit once per level.
+        int count = std::clamp(static_cast<int>(std::lround(p.resource)), 1,
+                               tune::kMaxScaffoldStack);
+        for (int k = 0; k < count; ++k) {
+          lit.set("uModel", model * glm::translate(glm::mat4(1.0f),
+                                                   glm::vec3(0, 1.35f * k, 0)));
+          scaffoldMesh.draw();
+        }
+        break;
+      }
     }
     if (mesh) mesh->draw();
   }
@@ -724,12 +776,32 @@ void App::render(float time) {
     switch (bd.type) {
       case BuildingType::Center:
         lit.set("uEmissive", totemGlow);
+        lit.set("uModel", model * glm::scale(glm::mat4(1.0f),
+                                             glm::vec3(1.0f + 0.14f * (bd.level - 1))));
         totemMesh.draw();
         lit.set("uEmissive", 0.0f);
         break;
       case BuildingType::Storage: storagePadMesh.draw(); break;
       case BuildingType::Campfire: campfireMesh.draw(); break;
-      case BuildingType::House: houseStages[std::clamp(bd.stage, 0, 3)].draw(); break;
+      case BuildingType::House:
+        houseStages[std::clamp(bd.stage, 0, 3)].draw();
+        break;
+      default: {
+        if (bd.stage >= 3) {
+          const Mesh* m = buildingMesh(bd.type);
+          if (m) m->draw();
+        } else if (bd.tier > 0) {
+          // Under construction: the scaffold stack stands at the site.
+          for (int k = 0; k < bd.tier; ++k) {
+            lit.set("uModel", model * glm::translate(glm::mat4(1.0f),
+                                                     glm::vec3(0, 1.35f * k, 0)));
+            scaffoldMesh.draw();
+          }
+        } else {
+          houseStages[std::clamp(bd.stage, 0, 2)].draw();
+        }
+        break;
+      }
     }
   }
 
@@ -767,11 +839,13 @@ void App::render(float time) {
                             glm::scale(glm::mat4(1.0f), glm::vec3(s)));
       foodPileMesh.draw();
     }
-    // The field and its crops.
-    float fh = world.terrain.heightAt(vil.fieldCenter.x, vil.fieldCenter.y);
-    lit.set("uModel", glm::translate(glm::mat4(1.0f),
-                                     glm::vec3(vil.fieldCenter.x, fh, vil.fieldCenter.y)));
-    fieldSlabMesh.draw();
+    // The fields and their crops.
+    for (const Field& f : vil.fields) {
+      float fh = world.terrain.heightAt(f.center.x, f.center.y);
+      lit.set("uModel", glm::translate(glm::mat4(1.0f),
+                                       glm::vec3(f.center.x, fh, f.center.y)));
+      fieldSlabMesh.draw();
+    }
     for (const FarmCell& c : vil.farmCells) {
       if (c.growth < 0.08f) continue;
       float ch = world.terrain.heightAt(c.pos.x, c.pos.y);
@@ -916,8 +990,51 @@ void App::render(float time) {
     if (villageRing.valid()) villageRing.draw();
   }
 
-  // Prayer motes above dancing worshippers, and miracle cast pulses.
+  // Scaffold placement ghost: what this stack becomes, and whether it fits.
+  {
+    int heldStack = hand.heldScaffoldCount(world);
+    if (heldStack > 0 && hand.hasGround && vil.founded) {
+      BuildingType t = Village::buildingForStack(heldStack, hand.civicChoice);
+      bool valid = world.scaffoldPlacementValid(hand.groundPoint, heldStack);
+      glm::vec3 gp = t == BuildingType::Center && vil.centerIdx >= 0
+                         ? vil.buildings[vil.centerIdx].pos
+                         : glm::vec3(hand.groundPoint.x,
+                                     world.terrain.heightAt(hand.groundPoint.x,
+                                                            hand.groundPoint.z),
+                                     hand.groundPoint.z);
+      glm::vec2 toCenter = glm::vec2(vil.center.x - gp.x, vil.center.z - gp.z);
+      float gy = glm::length(toCenter) > 0.5f ? std::atan2(toCenter.x, toCenter.y) : 0.0f;
+      const Mesh* m = buildingMesh(t);
+      if (m) {
+        lit.set("uTint", valid ? glm::vec3(0.55f, 1.0f, 0.55f)
+                               : glm::vec3(1.0f, 0.40f, 0.40f));
+        lit.set("uEmissive", 0.55f);
+        lit.set("uAlpha", 0.40f);
+        lit.set("uModel", glm::translate(glm::mat4(1.0f), gp) *
+                              glm::rotate(glm::mat4(1.0f), gy, glm::vec3(0, 1, 0)));
+        m->draw();
+        lit.set("uTint", glm::vec3(1.0f));
+        lit.set("uEmissive", 1.0f);
+      }
+    }
+  }
+
+  // Prayer motes above dancing worshippers, miracle cast pulses, and
+  // dispenser charge orbs.
   lit.set("uTint", glm::vec3(0.98f, 0.82f, 0.38f));
+  for (const Building& bd : vil.buildings) {
+    if (bd.type != BuildingType::Dispenser || bd.stage != 3) continue;
+    for (int k = 0; k < bd.charges; ++k) {
+      float a = time * 1.1f + static_cast<float>(k) * 2.094f;
+      glm::vec3 p = bd.pos + glm::vec3(std::cos(a) * 1.5f,
+                                       2.6f + 0.18f * std::sin(time * 2.0f + k),
+                                       std::sin(a) * 1.5f);
+      lit.set("uModel", glm::translate(glm::mat4(1.0f), p) *
+                            glm::scale(glm::mat4(1.0f), glm::vec3(0.22f)));
+      lit.set("uAlpha", 0.85f);
+      smokeDisc.draw();
+    }
+  }
   for (std::size_t i = 0; i < vil.villagers.size(); ++i) {
     const Villager& v = vil.villagers[i];
     if (!(v.job == Job::Worshipper && v.state == VState::Work) || v.inside) continue;
@@ -1053,6 +1170,44 @@ int App::runScreenshot(const std::string& path, int frames, const std::string& v
     cam.focus = world.temple.pos;
     cam.distance = 55.0f;
     cam.yaw = world.temple.yaw + 3.14159f;
+  } else if (view == "roster") {
+    // A model-viewer scene: every scaffold-built building in a row, plus
+    // scaffold stacks, so the whole roster can be eyeballed at once.
+    Village& v = world.village;
+    const BuildingType kTypes[] = {
+        BuildingType::House,     BuildingType::LargeAbode, BuildingType::Store,
+        BuildingType::Workshop,  BuildingType::Creche,     BuildingType::Graveyard,
+        BuildingType::Dispenser, BuildingType::Wonder};
+    glm::vec3 f(std::sin(2.3f), 0.0f, std::cos(2.3f));
+    glm::vec3 right(-f.z, 0.0f, f.x);
+    for (int k = 0; k < 8; ++k) {
+      Building b;
+      b.type = kTypes[k];
+      b.pos = v.center + right * (static_cast<float>(k - 4) * 11.0f) + f * 26.0f;
+      // Pull anything that landed in the sea back toward the village.
+      for (int step = 0; step < 24 && world.terrain.heightAt(b.pos.x, b.pos.z) < 1.8f;
+           ++step)
+        b.pos = glm::mix(b.pos, v.center, 0.12f);
+      b.pos.y = world.terrain.heightAt(b.pos.x, b.pos.z);
+      b.yaw = 2.3f + 3.14159f;
+      b.stage = 3;
+      b.tier = 1;
+      if (b.type == BuildingType::Dispenser) b.charges = 2;
+      v.buildings.push_back(b);
+    }
+    for (int k = 0; k < 3; ++k) {
+      Prop s;
+      s.type = PropType::Scaffold;
+      s.resource = static_cast<float>(1 + k * 2);  // 1, 3, 5 stacks
+      s.radius = 1.0f;
+      s.pos = v.center + right * (static_cast<float>(k - 1) * 6.0f) - f * 14.0f;
+      s.pos.y = world.terrain.heightAt(s.pos.x, s.pos.z) + 0.7f;
+      s.asleep = true;
+      world.spawnProp(s);
+    }
+    cam.focus = world.village.center + f * 12.0f;
+    cam.distance = 60.0f;
+    cam.yaw = 2.3f;
   } else {
     cam.focus = glm::vec3(0.0f, 8.0f, 0.0f);
     cam.distance = 300.0f;
@@ -1115,6 +1270,12 @@ std::uint64_t worldChecksum(const World& w) {
   }
   int counters[3] = {w.village.wood, w.village.food, w.village.population()};
   h = fnvMix(h, counters, sizeof counters);
+  for (const Building& b : w.village.buildings) {
+    int info[4] = {static_cast<int>(b.type), b.stage, b.level, b.charges};
+    h = fnvMix(h, info, sizeof info);
+  }
+  int fieldCount = static_cast<int>(w.village.fields.size());
+  h = fnvMix(h, &fieldCount, sizeof fieldCount);
   addF(w.village.belief);
   addF(w.temple.mana);
   addF(w.dayCycle.t);
@@ -1215,7 +1376,7 @@ int runHeadless(std::uint32_t seed, int steps) {
   // [4] Drop-to-assign resolution rules.
   std::printf("[4] drop-to-assign\n");
   {
-    glm::vec3 fieldP(vil.fieldCenter.x, 0.0f, vil.fieldCenter.y);
+    glm::vec3 fieldP(vil.fields[0].center.x, 0.0f, vil.fields[0].center.y);
     fieldP.y = world.terrain.heightAt(fieldP.x, fieldP.z);
     check(vil.resolveJobAtPoint(world, fieldP) == Job::Farmer, "field -> farmer");
 
@@ -1338,6 +1499,153 @@ int runHeadless(std::uint32_t seed, int steps) {
     check(w3.temple.mana > manaStart + 5.0f, "worship generated mana");
   }
 
+  // [9] Scaffolds and the building roster.
+  std::printf("[9] scaffolds & building\n");
+  {
+    World w4;
+    w4.generate(seed);
+    Village& v4 = w4.village;
+    // Perpetual noon: this section tests construction logic, not the schedule.
+    w4.dayCycle.t = 0.45f;
+    w4.dayCycle.secondsPerDay = 1.0e6f;
+
+    auto spawnScaffold = [&](glm::vec3 pos, int count) {
+      Prop s;
+      s.type = PropType::Scaffold;
+      s.resource = static_cast<float>(count);
+      s.radius = 0.9f + 0.18f * static_cast<float>(count);
+      s.pos = pos;
+      s.pos.y = w4.terrain.heightAt(pos.x, pos.z) + 0.7f;
+      s.asleep = true;
+      return w4.spawnProp(s);
+    };
+    auto findSpot = [&](int count) {
+      for (float r = 22.0f; r < tune::kBuildPlacementRange; r += 4.0f)
+        for (float a = 0.0f; a < 6.28f; a += 0.3f) {
+          glm::vec3 p = v4.center + glm::vec3(std::sin(a) * r, 0.0f, std::cos(a) * r);
+          p.y = w4.terrain.heightAt(p.x, p.z);
+          if (w4.scaffoldPlacementValid(p, count)) return p;
+        }
+      return v4.center;  // will fail validity; the check will catch it
+    };
+
+    // a) End-to-end: the builder crafts a scaffold once the starter site is
+    //    done, and a placed scaffold gets built into a house.
+    v4.wood = 20;
+    int craftedIdx = -1;
+    for (int i = 0; i < 18000 && craftedIdx < 0; ++i) {  // up to 300 s
+      w4.update(dt);
+      for (std::size_t p = 0; p < w4.props.size(); ++p)
+        if (w4.props[p].alive && w4.props[p].type == PropType::Scaffold)
+          craftedIdx = static_cast<int>(p);
+    }
+    check(craftedIdx >= 0, "the workshop crafted a scaffold");
+    check(v4.scaffoldsCrafted > 0, "crafting was counted (and paid in wood)");
+    if (craftedIdx >= 0) {
+      int capBefore = v4.housingCapacity();
+      glm::vec3 spot = findSpot(1);
+      w4.props[craftedIdx].pos = spot + glm::vec3(0, 0.7f, 0);
+      check(w4.tryPlaceScaffold(craftedIdx, BuildingType::Store),
+            "crafted scaffold placed as a site");
+      bool built = false;
+      for (int i = 0; i < 18000 && !built; ++i) {
+        w4.update(dt);
+        built = v4.housingCapacity() > capBefore;
+      }
+      check(built, "builders raised the small abode from the scaffold");
+    }
+
+    // b) Combining stacks.
+    int a1 = spawnScaffold(v4.center + glm::vec3(20, 0, 4), 1);
+    int a2 = spawnScaffold(v4.center + glm::vec3(20.8f, 0, 4), 1);
+    int merged = w4.tryCombineScaffold(a1);
+    check(merged == a2 && std::lround(w4.props[a2].resource) == 2, "1 + 1 = a 2-stack");
+    int b5 = spawnScaffold(v4.center + glm::vec3(24, 0, 8), 5);
+    int b3 = spawnScaffold(v4.center + glm::vec3(24.7f, 0, 8), 3);
+    check(w4.tryCombineScaffold(b3) < 0, "5 + 3 refused (cap is 7)");
+    (void)b5;
+
+    // c) The full roster: place each stack size and complete it directly.
+    struct Placement {
+      int count;
+      BuildingType civic;
+      BuildingType expect;
+    };
+    const Placement kRoster[] = {
+        {2, BuildingType::Store, BuildingType::LargeAbode},
+        {3, BuildingType::Store, BuildingType::Store},
+        {3, BuildingType::Creche, BuildingType::Creche},
+        {3, BuildingType::Graveyard, BuildingType::Graveyard},
+        {4, BuildingType::Store, BuildingType::FieldSite},
+        {6, BuildingType::Store, BuildingType::Dispenser},
+        {7, BuildingType::Store, BuildingType::Wonder},
+    };
+    int foodCapBefore = v4.foodCap();
+    std::size_t fieldsBefore = v4.fields.size();
+    bool rosterOk = true;
+    for (const Placement& pl : kRoster) {
+      glm::vec3 spot = findSpot(pl.count);
+      int idx = spawnScaffold(spot, pl.count);
+      if (!w4.tryPlaceScaffold(idx, pl.civic)) {
+        rosterOk = false;
+        std::printf("      FAILED to place %d-stack\n", pl.count);
+        continue;
+      }
+      int newIdx = static_cast<int>(v4.buildings.size()) - 1;
+      rosterOk &= v4.buildings[newIdx].type == pl.expect;
+      v4.onBuildingComplete(w4, newIdx);
+    }
+    check(rosterOk, "every stack size placed and mapped to its building");
+    check(v4.foodCap() == foodCapBefore + tune::kStoreFoodCap, "the Store raised the caps");
+    check(v4.fields.size() == fieldsBefore + 1, "the Field planted a new plot");
+
+    // d) Center upgrade: a 5-stack at the totem.
+    float ringBefore = v4.influenceRadius();
+    int c5 = spawnScaffold(v4.buildings[v4.centerIdx].pos + glm::vec3(1, 0, 1), 5);
+    check(w4.tryPlaceScaffold(c5, BuildingType::Store), "5-stack at the totem accepted");
+    check(v4.buildings[v4.centerIdx].level == 2, "the Center leveled up");
+    check(v4.influenceRadius() > ringBefore, "influence grew with the Center");
+
+    // e) Dispenser: free casting from charges.
+    int dispIdx = -1;
+    for (std::size_t b = 0; b < v4.buildings.size(); ++b)
+      if (v4.buildings[b].type == BuildingType::Dispenser) dispIdx = static_cast<int>(b);
+    check(dispIdx >= 0, "a dispenser stands");
+    if (dispIdx >= 0) {
+      v4.buildings[dispIdx].charges = 2;
+      w4.temple.mana = 0.0f;
+      check(w4.castFoodMiracle(v4.buildings[dispIdx].pos + glm::vec3(3, 0, 0)),
+            "cast from dispenser charges with an empty pool");
+      check(v4.buildings[dispIdx].charges == 1, "a charge was spent");
+    }
+
+    // f) Wonder aura.
+    int wonderIdx = -1;
+    for (std::size_t b = 0; b < v4.buildings.size(); ++b)
+      if (v4.buildings[b].type == BuildingType::Wonder) wonderIdx = static_cast<int>(b);
+    check(wonderIdx >= 0 && v4.insideWonderAura(v4.buildings[wonderIdx].pos),
+          "the Wonder's aura is live");
+
+    // g) Storage caps pause absorption.
+    v4.food = v4.foodCap();
+    Prop overflow;
+    overflow.type = PropType::Food;
+    overflow.resource = 3.0f;
+    overflow.radius = 0.45f;
+    overflow.pos = v4.storagePos() + glm::vec3(0, 2, 0);
+    overflow.asleep = false;
+    int ovIdx = w4.spawnProp(overflow);
+    for (int i = 0; i < 300; ++i) w4.update(dt);
+    check(v4.food == v4.foodCap() && w4.props[ovIdx].alive,
+          "a full store refuses the deposit (the bundle stays)");
+
+    // h) Invalid placements refused.
+    glm::vec3 deep(v4.center.x, 0.0f, v4.center.z);
+    deep += glm::vec3(200.0f, 0.0f, 200.0f);
+    check(!w4.scaffoldPlacementValid(deep, 1), "placement far outside refused");
+    check(!w4.scaffoldPlacementValid(w4.temple.pos, 1), "placement on the temple refused");
+  }
+
   // [6] Three-day economy & schedule soak. Days are shrunk to 240 s - short
   // enough to simulate fast, long enough that walking/chopping (real-time
   // actions) still fit inside a work day.
@@ -1383,11 +1691,11 @@ int runHeadless(std::uint32_t seed, int steps) {
       if (b.type == BuildingType::House && b.stage == 3) ++stage3Houses;
     std::printf(
         "      wood %d (produced %d) | food %d (produced %d, eaten %d) | pop %d | "
-        "houses %d | stuck %d | midnight asleep %.0f%% | noon active %.0f%% | "
-        "mana %.0f | belief %.2f\n",
+        "houses %d | scaffolds %d | stuck %d | midnight asleep %.0f%% | "
+        "noon active %.0f%% | mana %.0f | belief %.2f\n",
         v2.wood, v2.woodProduced, v2.food, v2.foodProduced, v2.mealsEaten,
-        v2.population(), stage3Houses, v2.stuckEvents, midnightSleep * 100.0f,
-        noonActive * 100.0f, w2.temple.mana, v2.belief);
+        v2.population(), stage3Houses, v2.scaffoldsCrafted, v2.stuckEvents,
+        midnightSleep * 100.0f, noonActive * 100.0f, w2.temple.mana, v2.belief);
     check(w2.temple.mana > tune::kManaStart, "worship filled the mana pool");
     check(finite, "all positions finite");
     check(inBounds, "everyone stayed on the island");

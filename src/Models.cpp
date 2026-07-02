@@ -213,6 +213,117 @@ MeshData cropCone() {
   return md;
 }
 
+// ------------------------------------------------- the scaffold-built roster
+
+MeshData largeAbode() {
+  MeshData md;
+  const float hw = 3.1f, hd = 2.4f;
+  for (int sx = -1; sx <= 1; sx += 2)
+    for (int sz = -1; sz <= 1; sz += 2)
+      md.addBox(at(sx * hw, 1.4f, sz * hd), {0.16f, 1.4f, 0.16f}, kWood);
+  md.addBox(at(0.0f, 1.3f, -hd), {hw, 1.2f, 0.11f}, kPlaster);
+  md.addBox(at(-hw, 1.3f, 0.0f), {0.11f, 1.2f, hd}, kPlaster);
+  md.addBox(at(hw, 1.3f, 0.0f), {0.11f, 1.2f, hd}, kPlaster);
+  md.addBox(at(-hw * 0.62f, 1.3f, hd), {hw * 0.38f, 1.2f, 0.11f}, kPlaster);
+  md.addBox(at(hw * 0.62f, 1.3f, hd), {hw * 0.38f, 1.2f, 0.11f}, kPlaster);
+  md.addBox(at(0.0f, 2.05f, hd), {hw * 0.24f, 0.45f, 0.11f}, kPlaster);
+  md.addBox(at(0.0f, 0.85f, hd - 0.04f), {hw * 0.20f, 0.75f, 0.05f},
+            glm::vec3(0.12f, 0.09f, 0.06f));
+  glm::mat4 l = at(-hw * 0.52f, 3.15f, 0.0f);
+  l = glm::rotate(l, 0.66f, glm::vec3(0, 0, 1));
+  md.addBox(l, {hw * 0.80f, 0.10f, hd + 0.8f}, kThatch);
+  glm::mat4 r = at(hw * 0.52f, 3.15f, 0.0f);
+  r = glm::rotate(r, -0.66f, glm::vec3(0, 0, 1));
+  md.addBox(r, {hw * 0.80f, 0.10f, hd + 0.8f}, kThatch);
+  md.addBox(at(0.0f, 3.78f, 0.0f), {0.20f, 0.11f, hd + 0.7f}, kWood);
+  return md;
+}
+
+MeshData workshop() {
+  MeshData md;
+  // Open-sided work shed: posts, low walls, flat tilted roof, a bench + saw.
+  for (int sx = -1; sx <= 1; sx += 2)
+    for (int sz = -1; sz <= 1; sz += 2)
+      md.addBox(at(sx * 2.4f, 1.25f, sz * 1.9f), {0.15f, 1.25f, 0.15f}, kWood);
+  md.addBox(at(0.0f, 0.55f, -1.9f), {2.4f, 0.45f, 0.10f}, kWoodLight);
+  md.addBox(at(-2.4f, 0.55f, 0.0f), {0.10f, 0.45f, 1.9f}, kWoodLight);
+  glm::mat4 roof = at(0.0f, 2.75f, 0.0f);
+  roof = glm::rotate(roof, 0.16f, glm::vec3(0, 0, 1));
+  md.addBox(roof, {2.9f, 0.10f, 2.4f}, kThatch);
+  md.addBox(at(0.6f, 0.75f, 0.4f), {1.1f, 0.10f, 0.55f}, kWoodLight);  // bench
+  for (int k = 0; k < 2; ++k)
+    md.addBox(at(0.6f, 0.375f, 0.4f + (k ? 0.4f : -0.4f)), {0.08f, 0.375f, 0.08f}, kWood);
+  md.addCylinder(at(-1.2f, 0.45f, 0.8f), 0.32f, 0.32f, 0.9f, 7, kWood);  // log stock
+  return md;
+}
+
+MeshData store() {
+  MeshData md;
+  // A walled granary: stone base, plaster walls, shelf lines, wide flat roof.
+  md.addBox(at(0.0f, 0.3f, 0.0f), {2.6f, 0.3f, 2.2f}, kStone);
+  md.addBox(at(0.0f, 1.5f, 0.0f), {2.3f, 0.9f, 1.9f}, kPlaster);
+  md.addBox(at(0.0f, 1.1f, 1.92f), {1.4f, 0.35f, 0.06f}, kWood);   // shelf front
+  md.addBox(at(0.0f, 2.0f, 1.92f), {1.4f, 0.12f, 0.06f}, kWood);
+  md.addBox(at(0.0f, 2.75f, 0.0f), {2.9f, 0.14f, 2.5f}, kThatch);
+  md.addBox(at(0.0f, 3.1f, 0.0f), {1.6f, 0.22f, 1.3f}, kThatch);
+  return md;
+}
+
+MeshData creche() {
+  MeshData md;
+  // A round nursery hut with a soft dome.
+  md.addCylinder(at(0.0f, 1.0f, 0.0f), 2.1f, 1.9f, 2.0f, 10, kPlaster);
+  md.addCylinder(at(0.0f, 2.45f, 0.0f), 2.2f, 0.4f, 1.1f, 10, kThatch);
+  md.addBox(at(0.0f, 0.7f, 2.0f), {0.5f, 0.7f, 0.12f}, glm::vec3(0.12f, 0.09f, 0.06f));
+  md.addCylinder(at(0.0f, 3.2f, 0.0f), 0.14f, 0.10f, 0.5f, 6, kWood);
+  md.addBox(at(0.0f, 3.5f, 0.0f), {0.30f, 0.16f, 0.05f}, glm::vec3(0.95f, 0.75f, 0.4f));
+  return md;
+}
+
+MeshData graveyard() {
+  MeshData md;
+  // A fenced plot with a few headstones - symbolic until mortality lands.
+  for (int k = 0; k < 4; ++k) {
+    float x = -2.1f + 1.4f * static_cast<float>(k);
+    md.addBox(at(x, 0.45f, -2.2f), {0.08f, 0.45f, 0.08f}, kWood);
+    md.addBox(at(x, 0.45f, 2.2f), {0.08f, 0.45f, 0.08f}, kWood);
+  }
+  md.addBox(at(0.0f, 0.72f, -2.2f), {2.8f, 0.06f, 0.05f}, kWoodLight);
+  md.addBox(at(0.0f, 0.72f, 2.2f), {2.8f, 0.06f, 0.05f}, kWoodLight);
+  md.addBox(at(-0.7f, 0.5f, -0.6f), {0.32f, 0.5f, 0.10f}, kStone);
+  md.addBox(at(0.9f, 0.42f, 0.4f), {0.30f, 0.42f, 0.10f}, kStone);
+  md.addBox(at(-0.2f, 0.38f, 1.1f), {0.26f, 0.38f, 0.10f}, kStone * 0.9f);
+  md.addCylinder(at(1.6f, 0.9f, -1.2f), 0.10f, 0.08f, 1.8f, 6, kWood);
+  md.addBox(at(1.6f, 1.45f, -1.2f), {0.34f, 0.08f, 0.06f}, kWood);  // marker cross
+  return md;
+}
+
+MeshData dispenser() {
+  MeshData md;
+  // A pedestal cradling an orb - worship overflow charges it.
+  md.addCylinder(at(0.0f, 0.3f, 0.0f), 1.6f, 1.4f, 0.6f, 9, kStone);
+  md.addCylinder(at(0.0f, 1.3f, 0.0f), 0.55f, 0.75f, 1.4f, 8, kStone * 1.08f);
+  md.addRock(at(0.0f, 2.55f, 0.0f), 0.62f, 991u, glm::vec3(0.55f, 0.85f, 1.0f));
+  return md;
+}
+
+MeshData wonder() {
+  MeshData md;
+  // A monumental spiral of stone rising to a gold crown.
+  md.addBox(at(0.0f, 0.5f, 0.0f), {3.4f, 0.5f, 3.4f}, kStone);
+  md.addBox(at(0.0f, 1.4f, 0.0f), {2.6f, 0.45f, 2.6f}, kStone * 1.06f);
+  for (int k = 0; k < 5; ++k) {
+    float a = static_cast<float>(k) * 1.256f;
+    float h = 2.4f + static_cast<float>(k) * 1.05f;
+    glm::mat4 m = atRotY(std::cos(a) * 1.5f, h, std::sin(a) * 1.5f, -a);
+    md.addBox(m, {0.55f, 0.65f, 0.55f}, k % 2 ? kStone : kStone * 1.1f);
+  }
+  md.addCylinder(at(0.0f, 6.2f, 0.0f), 0.5f, 0.28f, 2.4f, 8, kStone);
+  md.addCylinder(at(0.0f, 8.0f, 0.0f), 0.65f, 0.0f, 1.2f, 8,
+                 glm::vec3(1.0f, 0.85f, 0.40f));
+  return md;
+}
+
 // ------------------------------------------------------------ resource props
 
 MeshData logProp() {
@@ -232,6 +343,29 @@ MeshData foodBundleProp() {
 MeshData stumpProp() {
   MeshData md;  // origin at center, ~0.9 tall
   md.addCylinder(glm::mat4(1.0f), 0.34f, 0.30f, 0.9f, 7, kWood);
+  return md;
+}
+
+MeshData scaffoldProp() {
+  MeshData md;  // one lattice unit, ~1.35 tall, origin at its base center
+  const float h = 1.35f, w = 0.75f;
+  for (int sx = -1; sx <= 1; sx += 2)
+    for (int sz = -1; sz <= 1; sz += 2)
+      md.addBox(at(sx * w, h * 0.5f, sz * w), {0.07f, h * 0.5f, 0.07f}, kWoodLight);
+  for (int level = 0; level < 2; ++level) {
+    float y = level == 0 ? 0.08f : h - 0.08f;
+    md.addBox(at(0.0f, y, -w), {w, 0.06f, 0.06f}, kWood);
+    md.addBox(at(0.0f, y, w), {w, 0.06f, 0.06f}, kWood);
+    md.addBox(at(-w, y, 0.0f), {0.06f, 0.06f, w}, kWood);
+    md.addBox(at(w, y, 0.0f), {0.06f, 0.06f, w}, kWood);
+  }
+  // Diagonal braces sell the lattice.
+  glm::mat4 b1 = at(0.0f, h * 0.5f, w);
+  b1 = glm::rotate(b1, 0.85f, glm::vec3(0, 0, 1));
+  md.addBox(b1, {0.75f, 0.05f, 0.05f}, kWood);
+  glm::mat4 b2 = at(0.0f, h * 0.5f, -w);
+  b2 = glm::rotate(b2, -0.85f, glm::vec3(0, 0, 1));
+  md.addBox(b2, {0.75f, 0.05f, 0.05f}, kWood);
   return md;
 }
 

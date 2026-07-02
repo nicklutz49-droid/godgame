@@ -115,6 +115,14 @@ bool Hand::tryGrab(World& world) {
   return true;
 }
 
+int Hand::heldScaffoldCount(const World& world) const {
+  if (mode != Mode::Carry || !held.isProp()) return 0;
+  const Prop& p = world.props[held.index];
+  if (!p.alive || p.type != PropType::Scaffold) return 0;
+  return std::clamp(static_cast<int>(std::lround(p.resource)), 1,
+                    tune::kMaxScaffoldStack);
+}
+
 void Hand::release(World& world) {
   if (mode != Mode::Carry || held.none()) return;
 
@@ -122,6 +130,23 @@ void Hand::release(World& world) {
   float speed = glm::length(v);
   lastReleaseSpeed = speed;
   const bool gentle = speed < tune::kPlaceSpeed;
+
+  // Scaffolds: a gentle release merges into a nearby scaffold, or commits a
+  // construction site on valid ground; otherwise it just drops/throws.
+  if (held.isProp() && world.props[held.index].type == PropType::Scaffold &&
+      gentle) {
+    int idx = held.index;
+    Prop& s = world.props[idx];
+    s.held = false;
+    if (world.tryCombineScaffold(idx) >= 0 ||
+        world.tryPlaceScaffold(idx, civicChoice)) {
+      held.clear();
+      mode = Mode::Free;
+      hasPrevHeldPos_ = false;
+      return;
+    }
+    s.held = true;  // neither applied; fall through to the normal drop
+  }
 
   if (held.isVillager()) {
     Villager& vg = world.village.villagers[held.index];

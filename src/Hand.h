@@ -21,6 +21,12 @@ class Hand {
   glm::vec3 groundPoint{0.0f};  // where the cursor ray meets terrain/water
   bool hasGround = false;
   float lastReleaseSpeed = 0.0f;  // for threshold tuning (logged by the app)
+  // While holding a 3-stack, the wheel cycles which civic building it becomes.
+  BuildingType civicChoice = BuildingType::Store;
+
+  // Is the hand carrying a scaffold of `count` stacks? (drives ghost preview
+  // and the wheel intercept; count 0 = not a scaffold)
+  int heldScaffoldCount(const World& world) const;
 
   void update(float dt, const glm::vec3& rayOrigin, const glm::vec3& rayDir,
               World& world);

@@ -64,6 +64,30 @@ inline constexpr float kMaxThrowSpeed = 70.0f;
 inline constexpr float kPanicSeconds = 4.0f;
 inline constexpr float kReactRadiusPerAltitude = 1.5f;  // hand low = scarier
 
+// --- scaffolds & buildings ---
+inline constexpr int kScaffoldWoodCost = 4;
+inline constexpr float kScaffoldCraftSeconds = 8.0f;
+inline constexpr int kMaxLooseScaffolds = 3;   // auto-crafting stops here
+inline constexpr int kMaxScaffoldStack = 7;
+inline constexpr float kScaffoldCombineRadius = 1.8f;
+inline constexpr float kBuildSecondsPerScaffold = 12.0f;
+inline constexpr float kBuildPlacementRange = 55.0f;  // from the village center
+inline constexpr int kBedsSmallAbode = 4;
+inline constexpr int kBedsLargeAbode = 8;
+inline constexpr int kBaseFoodCap = 60;
+inline constexpr int kBaseWoodCap = 30;
+inline constexpr int kStoreFoodCap = 80;   // added per completed Store
+inline constexpr int kStoreWoodCap = 50;
+inline constexpr float kCrecheSurplusFactor = 0.6f;  // eases the birth check
+inline constexpr float kGraveyardBeliefPerDay = 0.015f;  // symbolic until M2
+inline constexpr int kDispenserMaxCharges = 3;
+inline constexpr float kDispenserCastRadius = 25.0f;
+inline constexpr float kWonderAuraRadius = 45.0f;
+inline constexpr float kWonderDecayFactor = 0.5f;   // belief decay inside aura
+inline constexpr float kWonderAweFactor = 1.5f;
+inline constexpr float kCenterInfluencePerLevel = 8.0f;
+inline constexpr float kCenterManaPerLevel = 0.15f;  // worship multiplier/level
+
 // --- worship, belief, mana, miracles ---
 inline constexpr float kManaStart = 20.0f;
 inline constexpr float kManaMax = 100.0f;

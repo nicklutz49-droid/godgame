@@ -4,7 +4,8 @@ Black & White inspired god game in C++20 / OpenGL 3.3 / SDL2. No creature.
 All art is procedural placeholder; original B&W assets may be wired in later
 behind the existing interfaces (Terrain, Mesh). Personal project, no
 distribution. Slices so far: living village (docs/plan-villagers.md),
-worship/belief/mana/temple + food miracle (docs/plan-worship.md).
+worship/belief/mana/temple + food miracle (docs/plan-worship.md), scaffolds &
+the building roster (docs/plan-scaffolds.md). Master arc: docs/plan-game.md.
 
 ## Build & test
 
@@ -47,6 +48,10 @@ for SDL2/glm when system packages are missing — don't add hard system deps.
   MORTALITY SEAMs) — do not add ad-hoc kill paths.
 - Props are never erased: consumed props set `alive=false` and slots are
   reused by `World::spawnProp`. Holders (hand, villagers) re-validate on use.
+- Buildings are never erased either (villager targets hold indices); dead
+  stages: -1 reserved plot, future -2 cancelled. Scaffold placement/combining
+  go only through `World::tryPlaceScaffold`/`tryCombineScaffold`, and the
+  stack→building mapping lives in `Village::buildingForStack`.
 - `World::kTreeHalfHeight` must match the tree model built in
   `buildTreeMeshData()` (model spans y ∈ [-3.25, 3.25], origin at center).
 - Front faces are CCW; back-face culling is on. New primitive builders need

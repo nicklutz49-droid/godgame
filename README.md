@@ -10,7 +10,33 @@ screen is procedural placeholder art. There is no creature, by design.
 ![The temple](docs/temple.png)
 ![The island](docs/island.png)
 
-## Current slice: worship, belief & the temple
+## Current slice: scaffolds & the buildable village
+
+The growth engine from [docs/plan-game.md](docs/plan-game.md) (slice plan:
+[docs/plan-scaffolds.md](docs/plan-scaffolds.md)) — wood becomes scaffolds
+becomes the village you designed:
+
+![The building roster](docs/roster.png)
+
+- **Workshops craft scaffolds**: builders with no construction to serve work
+  the bench, turning 4 wood into a physical scaffold lattice (up to 3 waiting
+  in the yard).
+- **Combine by hand**: gently place one scaffold onto another to merge stacks
+  (up to 7). Gently place a stack on open ground to commit a construction
+  site — a ghost preview shows what it becomes and whether it fits (green /
+  red). Scaffolds are the material: builders raise the building straight
+  from the stack, ~12 s per scaffold tier.
+- **The roster**: 1 = Small Abode · 2 = Large Abode · 3 = civic (mouse wheel
+  cycles Store / Workshop / Crèche / Graveyard while holding) · 4 = Field ·
+  5 = Village Center upgrade (place at the totem) · 6 = Miracle Dispenser ·
+  7 = Wonder.
+- **Effects**: the Store raises the new storage caps; the Crèche eases
+  births; the Graveyard sustains belief (burial arrives with mortality, M2);
+  Fields plant new crop plots; Center levels widen influence and speed
+  worship; the Dispenser banks worship overflow as free miracle casts; the
+  Wonder's aura slows belief decay and amplifies awe.
+
+## Previous slice: worship, belief & the temple
 
 The god-game loop is closed (design docs: [villagers](docs/plan-villagers.md),
 [worship](docs/plan-worship.md)): worshippers dance at the village totem →
@@ -67,9 +93,10 @@ hard landings stun instead. The mortality seams are in place for later.
 | Input | Action |
 | --- | --- |
 | Left-drag on ground | Pan (grab the land) |
-| Left-drag on thing | Pick up rock / tree / log / food / **villager** |
-| ...release while still | Set down — on trees/field/water/site = assign job |
+| Left-drag on thing | Pick up rock / tree / log / food / scaffold / **villager** |
+| ...release while still | Set down — on trees/field/water/site = assign job; scaffold on scaffold = combine; scaffold on open ground = build |
 | ...release mid-motion | Throw |
+| Wheel (holding a 3-stack) | Choose the civic building (Store/Workshop/Crèche/Graveyard) |
 | Right- or middle-drag | Rotate & tilt camera |
 | Mouse wheel | Zoom toward cursor |
 | `W A S D` / arrows | Move camera (Shift = faster) |

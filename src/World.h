@@ -13,9 +13,10 @@
 enum class PropType : std::uint8_t {
   Rock,
   Tree,
-  Log,    // felled wood, haulable, floats
-  Food,   // meal bundle (grain/fish), haulable, floats
-  Stump,  // what remains of a chopped tree
+  Log,      // felled wood, haulable, floats
+  Food,     // meal bundle (grain/fish), haulable, floats
+  Stump,    // what remains of a chopped tree
+  Scaffold, // crafted at workshops; resource = stack count (1..7); floats
   // reserved: Body - mortality slice (corpses are just grabbable props)
 };
 
@@ -92,8 +93,23 @@ class World {
   bool insideInfluence(const glm::vec3& p) const;
 
   // Rain food from the sky at p. Fails (returns false) outside influence or
-  // with insufficient mana. Deterministic per cast via its own stream.
+  // with insufficient mana (a charged Miracle Dispenser within range covers
+  // the cost first). Deterministic per cast via its own stream.
   bool castFoodMiracle(const glm::vec3& p);
+
+  // --- scaffold verbs (called by the hand; driven directly by tests) ---
+
+  // Merge the held scaffold into a nearby one (sum capped at 7).
+  // Returns the target index, or -1 if nothing merged.
+  int tryCombineScaffold(int scaffoldIdx);
+
+  // Commit a scaffold at its current position: validity-check the ground and
+  // create the construction site for its stack count. `civicChoice` picks the
+  // building for 3-stacks. On success the prop is consumed.
+  bool tryPlaceScaffold(int scaffoldIdx, BuildingType civicChoice);
+
+  // Would tryPlaceScaffold succeed here? (drives the ghost preview color)
+  bool scaffoldPlacementValid(const glm::vec3& pos, int count) const;
 
   std::uint32_t seed() const { return seed_; }
 

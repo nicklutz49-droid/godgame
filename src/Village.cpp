@@ -21,6 +21,22 @@ glm::vec2 xz(const glm::vec3& p) { return {p.x, p.z}; }
 
 }  // namespace
 
+void Village::addField(glm::vec2 center2, glm::vec2 half, noise::XorShift* rng) {
+  fields.push_back({center2, half});
+  for (int j = 0; j < 4; ++j) {
+    for (int i = 0; i < 6; ++i) {
+      FarmCell c;
+      c.pos = center2 +
+              glm::vec2((static_cast<float>(i) + 0.5f) / 6.0f - 0.5f, 0.0f) *
+                  (half.x * 2.0f) +
+              glm::vec2(0.0f, (static_cast<float>(j) + 0.5f) / 4.0f - 0.5f) *
+                  (half.y * 2.0f);
+      c.growth = rng ? rng->range(0.15f, 0.85f) : 0.1f;
+      farmCells.push_back(c);
+    }
+  }
+}
+
 void Village::plan(World& world, std::uint32_t seed) {
   Terrain& terrain = world.terrain;
   rng_ = seed * 2654435761u + 97u;
@@ -111,31 +127,21 @@ void Village::plan(World& world, std::uint32_t seed) {
   storageIdx = place(BuildingType::Storage, kDirs8[0], 9.0f, 3, 0);
   campfireIdx = place(BuildingType::Campfire, kDirs8[5], 6.5f, 3, 0);
 
-  // Three finished houses, one open construction site, three reserved plots.
+  // Three finished houses, a workshop (the scaffold engine needs a bootstrap),
+  // one open construction site, three reserved plots.
   place(BuildingType::House, kDirs8[1], 15.0f, 3, 0);
   place(BuildingType::House, kDirs8[3], 15.0f, 3, 0);
   place(BuildingType::House, kDirs8[4], 15.0f, 3, 0);
+  place(BuildingType::Workshop, kDirs8[3], 24.0f, 3, 0);
   place(BuildingType::House, kDirs8[6], 15.0f, 0, tune::kHouseWoodCost);
   place(BuildingType::House, kDirs8[7], 22.0f, -1, 0);
   place(BuildingType::House, kDirs8[0], 22.0f, -1, 0);
   place(BuildingType::House, kDirs8[5], 22.0f, -1, 0);
 
-  // Field: a tilled rectangle on the terrace, 6x4 crop cells.
-  fieldCenter = fieldC;
-  fieldHalf = glm::vec2(8.0f, 5.0f);
+  // Founding field: a tilled rectangle on the terrace, 6x4 crop cells.
+  fields.clear();
   farmCells.clear();
-  for (int j = 0; j < 4; ++j) {
-    for (int i = 0; i < 6; ++i) {
-      FarmCell c;
-      c.pos = fieldCenter + glm::vec2((static_cast<float>(i) + 0.5f) / 6.0f - 0.5f,
-                                      0.0f) *
-                                (fieldHalf.x * 2.0f) +
-              glm::vec2(0.0f, (static_cast<float>(j) + 0.5f) / 4.0f - 0.5f) *
-                  (fieldHalf.y * 2.0f);
-      c.growth = rng.range(0.15f, 0.85f);  // staggered so harvests trickle in
-      farmCells.push_back(c);
-    }
-  }
+  addField(fieldC, glm::vec2(8.0f, 5.0f), &rng);
 
   // Fishing spots: march each compass direction to the first waterline.
   fishingSpots.clear();
@@ -191,7 +197,12 @@ void Village::step(World& world, float dt) {
   float sun = 0.25f + 0.75f * world.dayCycle.daylight();  // crops rest at night
 
   // Faith fades unless the god stays present (worship counteracts this).
-  belief = std::max(tune::kBeliefFloor, belief - tune::kBeliefDecayPerDay * dayFrac);
+  // A Wonder slows the fade; a tended Graveyard quietly sustains it.
+  float decay = tune::kBeliefDecayPerDay;
+  if (insideWonderAura(center)) decay *= tune::kWonderDecayFactor;
+  decay -= static_cast<float>(countCompleted(BuildingType::Graveyard)) *
+           tune::kGraveyardBeliefPerDay;
+  belief = std::max(tune::kBeliefFloor, belief - decay * dayFrac);
 
   for (FarmCell& c : farmCells) {
     c.tendedTimer = std::max(0.0f, c.tendedTimer - dt);
@@ -216,21 +227,31 @@ void Village::step(World& world, float dt) {
     }
   }
 
-  // Dawn tick: modest population growth. (Belief will later feed a happiness
-  // multiplier into exactly this check.)
+  // Dawn tick: modest population growth. A Crèche eases the surplus needed
+  // and hosts the newborns. (Belief will later feed a happiness multiplier
+  // into exactly this check.)
   float t = world.dayCycle.t;
   if (lastT >= 0.0f && lastT < tune::kDawnT && t >= tune::kDawnT) {
-    bool surplus = food > static_cast<int>(tune::kGrowthFoodPerCapita *
-                                           static_cast<float>(population()));
+    float needed = tune::kGrowthFoodPerCapita * static_cast<float>(population());
+    int creches = countCompleted(BuildingType::Creche);
+    if (creches > 0) needed *= tune::kCrecheSurplusFactor;
+    bool surplus = food > static_cast<int>(needed);
     if (surplus && population() < housingCapacity() &&
         population() < tune::kMaxPopulation) {
       XorShift rng(rng_);
-      // A child appears at an occupied finished house.
+      // A child appears at the creche if there is one, else at a home.
       std::vector<int> occupied;
-      for (std::size_t b = 0; b < buildings.size(); ++b)
-        if (buildings[b].type == BuildingType::House && buildings[b].stage == 3 &&
-            buildings[b].residents > 0)
+      for (std::size_t b = 0; b < buildings.size(); ++b) {
+        if (buildings[b].stage != 3) continue;
+        if (buildings[b].type == BuildingType::Creche)
           occupied.push_back(static_cast<int>(b));
+      }
+      if (occupied.empty()) {
+        for (std::size_t b = 0; b < buildings.size(); ++b)
+          if (buildings[b].type == BuildingType::House && buildings[b].stage == 3 &&
+              buildings[b].residents > 0)
+            occupied.push_back(static_cast<int>(b));
+      }
       if (!occupied.empty()) {
         int house = occupied[rng.next() % occupied.size()];
         Villager child;
@@ -259,13 +280,10 @@ Job Village::resolveJobAtPoint(const World& world, const glm::vec3& p) const {
     return Job::Worshipper;
 
   for (const Building& b : buildings)
-    if (b.type == BuildingType::House && b.stage >= 0 && b.stage < 3 &&
-        glm::distance(xz(b.pos), xz(p)) < 6.0f)
+    if (b.stage >= 0 && b.stage < 3 && glm::distance(xz(b.pos), xz(p)) < 6.0f)
       return Job::Builder;
 
-  if (std::abs(p.x - fieldCenter.x) < fieldHalf.x + 2.0f &&
-      std::abs(p.z - fieldCenter.y) < fieldHalf.y + 2.0f)
-    return Job::Farmer;
+  if (insideAnyField(p.x, p.z, 2.0f)) return Job::Farmer;
 
   for (const Prop& prop : world.props)
     if (prop.alive && prop.type == PropType::Tree && prop.resource > 0.0f &&
@@ -290,37 +308,128 @@ bool Village::inStorageRadius(const glm::vec3& p) const {
 bool Village::insideFootprint(float x, float z) const {
   if (!founded) return false;
   if (glm::distance(glm::vec2(x, z), xz(center)) < radius + 4.0f) return true;
-  return std::abs(x - fieldCenter.x) < fieldHalf.x + 3.0f &&
-         std::abs(z - fieldCenter.y) < fieldHalf.y + 3.0f;
+  return insideAnyField(x, z, 3.0f);
+}
+
+bool Village::insideAnyField(float x, float z, float margin) const {
+  for (const Field& f : fields)
+    if (std::abs(x - f.center.x) < f.half.x + margin &&
+        std::abs(z - f.center.y) < f.half.y + margin)
+      return true;
+  return false;
 }
 
 int Village::housingCapacity() const {
   int cap = 0;
-  for (const Building& b : buildings)
-    if (b.type == BuildingType::House && b.stage == 3) cap += 4;
+  for (const Building& b : buildings) {
+    if (b.stage != 3) continue;
+    if (b.type == BuildingType::House) cap += tune::kBedsSmallAbode;
+    if (b.type == BuildingType::LargeAbode) cap += tune::kBedsLargeAbode;
+  }
   return cap;
+}
+
+int Village::foodCap() const {
+  return tune::kBaseFoodCap +
+         countCompleted(BuildingType::Store) * tune::kStoreFoodCap;
+}
+
+int Village::woodCap() const {
+  return tune::kBaseWoodCap +
+         countCompleted(BuildingType::Store) * tune::kStoreWoodCap;
+}
+
+int Village::countCompleted(BuildingType type) const {
+  int n = 0;
+  for (const Building& b : buildings)
+    if (b.type == type && b.stage == 3) ++n;
+  return n;
+}
+
+BuildingType Village::buildingForStack(int count, BuildingType civicChoice) {
+  switch (count) {
+    case 1: return BuildingType::House;
+    case 2: return BuildingType::LargeAbode;
+    case 3:
+      // The wheel picks among the civic four; anything else defaults to Store.
+      if (civicChoice == BuildingType::Workshop || civicChoice == BuildingType::Creche ||
+          civicChoice == BuildingType::Graveyard || civicChoice == BuildingType::Store)
+        return civicChoice;
+      return BuildingType::Store;
+    case 4: return BuildingType::FieldSite;
+    case 5: return BuildingType::Center;  // upgrade at the totem
+    case 6: return BuildingType::Dispenser;
+    default: return BuildingType::Wonder;  // 7
+  }
+}
+
+void Village::onBuildingComplete(World& world, int buildingIdx) {
+  Building& b = buildings[buildingIdx];
+  b.stage = 3;
+  switch (b.type) {
+    case BuildingType::House:
+    case BuildingType::LargeAbode:
+      // Home the homeless in the new beds.
+      for (std::size_t o = 0; o < villagers.size(); ++o)
+        if (villagers[o].home < 0)
+          villagers[o].home = findHomeFor(static_cast<int>(o));
+      break;
+    case BuildingType::FieldSite: {
+      addField(xz(b.pos), glm::vec2(8.0f, 5.0f), nullptr);
+      break;
+    }
+    default:
+      break;  // Store/Workshop/Creche/Graveyard/Dispenser/Wonder act via queries
+  }
+  (void)world;
+}
+
+float Village::centerManaMultiplier() const {
+  float lvl = centerLevel();
+  return 1.0f + tune::kCenterManaPerLevel * (lvl - 1.0f);
+}
+
+float Village::centerLevel() const {
+  return centerIdx >= 0 ? static_cast<float>(buildings[centerIdx].level) : 1.0f;
+}
+
+bool Village::insideWonderAura(const glm::vec3& p) const {
+  for (const Building& b : buildings)
+    if (b.type == BuildingType::Wonder && b.stage == 3 &&
+        glm::distance(xz(b.pos), xz(p)) < tune::kWonderAuraRadius)
+      return true;
+  return false;
 }
 
 void Village::absorbProp(World& world, int propIdx) {
   Prop& p = world.props[propIdx];
   if (!p.alive) return;
   switch (p.type) {
-    case PropType::Log:
+    case PropType::Log: {
+      if (wood >= woodCap()) return;  // pile is full; the log stays put
       wood += 1;
       woodProduced += 1;
       break;
-    case PropType::Tree:
-      wood += std::max(1, static_cast<int>(std::lround(
-                              tune::kLogsPerTree * p.scale)));
-      woodProduced += std::max(1, static_cast<int>(std::lround(
-                                      tune::kLogsPerTree * p.scale)));
+    }
+    case PropType::Tree: {
+      if (wood >= woodCap()) return;
+      int value = std::max(1, static_cast<int>(std::lround(
+                                  tune::kLogsPerTree * p.scale)));
+      value = std::min(value, woodCap() - wood);
+      wood += value;
+      woodProduced += value;
       break;
-    case PropType::Food:
-      food += std::max(1, static_cast<int>(std::lround(p.resource)));
-      foodProduced += std::max(1, static_cast<int>(std::lround(p.resource)));
+    }
+    case PropType::Food: {
+      if (food >= foodCap()) return;
+      int value = std::max(1, static_cast<int>(std::lround(p.resource)));
+      value = std::min(value, foodCap() - food);
+      food += value;
+      foodProduced += value;
       break;
+    }
     default:
-      return;  // rocks and stumps are not storeable
+      return;  // rocks, stumps and scaffolds are not storeable
   }
   p.alive = false;
   p.held = false;
@@ -342,13 +451,15 @@ void Village::notifyDivineEvent(const glm::vec3& where, float fear, float awe) {
     }
   }
   if (awe > 0.0f && population() > 0) {
+    if (insideWonderAura(where)) awe *= tune::kWonderAweFactor;
     belief = std::min(1.0f, belief + awe * static_cast<float>(witnesses) /
                                         static_cast<float>(population()));
   }
 }
 
 float Village::influenceRadius() const {
-  return tune::kVillageInfluenceBase + belief * tune::kVillageInfluenceScale;
+  return tune::kVillageInfluenceBase + belief * tune::kVillageInfluenceScale +
+         (centerLevel() - 1.0f) * tune::kCenterInfluencePerLevel;
 }
 
 int Village::activeWorshippers() const {

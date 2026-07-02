@@ -16,7 +16,8 @@ constexpr float kGravity = 28.0f;
 using noise::XorShift;
 
 bool propFloats(PropType t) {
-  return t == PropType::Tree || t == PropType::Log || t == PropType::Food;
+  return t == PropType::Tree || t == PropType::Log || t == PropType::Food ||
+         t == PropType::Scaffold;
 }
 
 }  // namespace
@@ -96,8 +97,21 @@ bool World::insideInfluence(const glm::vec3& p) const {
 
 bool World::castFoodMiracle(const glm::vec3& p) {
   if (!temple.founded || !insideInfluence(p)) return false;
-  if (temple.mana < tune::kFoodMiracleCost) return false;
-  temple.mana -= tune::kFoodMiracleCost;
+
+  // A charged Miracle Dispenser within reach covers the cost first.
+  Building* dispenser = nullptr;
+  for (Building& b : village.buildings)
+    if (b.type == BuildingType::Dispenser && b.stage == 3 && b.charges > 0 &&
+        glm::distance(glm::vec2(b.pos.x, b.pos.z), glm::vec2(p.x, p.z)) <
+            tune::kDispenserCastRadius)
+      dispenser = &b;
+
+  if (dispenser) {
+    --dispenser->charges;
+  } else {
+    if (temple.mana < tune::kFoodMiracleCost) return false;
+    temple.mana -= tune::kFoodMiracleCost;
+  }
 
   XorShift rng(seed_ ^ (++miracleCounter_ * 0x9E3779B9u));
   for (int k = 0; k < tune::kFoodMiracleBundles; ++k) {
@@ -131,6 +145,8 @@ float World::restHeight(const Prop& p) const {
       return ground + 0.25f * p.scale;
     case PropType::Stump:
       return ground + 0.35f * p.scale;
+    case PropType::Scaffold:
+      return ground + 0.68f * p.scale;  // lattice cube sits on its base
     default:
       return ground + p.radius * 0.55f;
   }
@@ -299,6 +315,114 @@ void World::update(float dt) {
   }
 
   if (village.founded) village.step(*this, dt);
+}
+
+int World::tryCombineScaffold(int scaffoldIdx) {
+  if (scaffoldIdx < 0 || scaffoldIdx >= static_cast<int>(props.size())) return -1;
+  Prop& held = props[scaffoldIdx];
+  if (!held.alive || held.type != PropType::Scaffold) return -1;
+
+  int best = -1;
+  float bestD = tune::kScaffoldCombineRadius;
+  for (std::size_t i = 0; i < props.size(); ++i) {
+    if (static_cast<int>(i) == scaffoldIdx) continue;
+    const Prop& p = props[i];
+    if (!p.alive || p.held || p.carrier >= 0 || p.type != PropType::Scaffold)
+      continue;
+    if (p.resource + held.resource > static_cast<float>(tune::kMaxScaffoldStack) + 0.5f)
+      continue;
+    float d = glm::distance(glm::vec2(p.pos.x, p.pos.z),
+                            glm::vec2(held.pos.x, held.pos.z));
+    if (d < bestD) {
+      bestD = d;
+      best = static_cast<int>(i);
+    }
+  }
+  if (best < 0) return -1;
+
+  Prop& target = props[best];
+  target.resource += held.resource;
+  target.scale = 1.0f;
+  target.radius = 0.9f + 0.18f * target.resource;  // taller stack, fatter pick
+  target.asleep = true;
+  target.pos.y = restHeight(target);
+  held.alive = false;
+  held.held = false;
+  return best;
+}
+
+bool World::scaffoldPlacementValid(const glm::vec3& pos, int count) const {
+  if (!village.founded) return false;
+  glm::vec2 p2(pos.x, pos.z);
+  glm::vec2 c2(village.center.x, village.center.z);
+
+  // Center upgrades happen AT the totem; everything else needs open ground.
+  if (Village::buildingForStack(count, BuildingType::Store) == BuildingType::Center)
+    return glm::distance(p2, c2) < 8.0f &&
+           village.buildings[village.centerIdx].level < 3;
+
+  if (glm::distance(p2, c2) > tune::kBuildPlacementRange) return false;
+  float footprint = count >= 4 ? 9.0f : (count >= 3 ? 4.5f : 3.5f);
+  if (terrain.heightAt(pos.x, pos.z) < 1.5f) return false;
+  // Area flatness over the footprint.
+  float flat = 0.0f;
+  for (int j = -1; j <= 1; ++j)
+    for (int i = -1; i <= 1; ++i)
+      flat += terrain.normalAt(pos.x + static_cast<float>(i) * footprint * 0.5f,
+                               pos.z + static_cast<float>(j) * footprint * 0.5f).y;
+  if (flat / 9.0f < 0.85f) return false;
+  // Clear of buildings, fields, the temple, and blocking props.
+  for (const Building& b : village.buildings) {
+    if (b.stage < 0) continue;
+    if (glm::distance(glm::vec2(b.pos.x, b.pos.z), p2) < footprint * 0.5f + 4.0f)
+      return false;
+  }
+  if (village.insideAnyField(pos.x, pos.z, footprint * 0.5f + 1.0f)) return false;
+  if (temple.founded &&
+      glm::distance(glm::vec2(temple.pos.x, temple.pos.z), p2) < 14.0f)
+    return false;
+  for (const Prop& p : props) {
+    if (!p.alive) continue;
+    if (p.type != PropType::Tree && p.type != PropType::Rock &&
+        p.type != PropType::Stump)
+      continue;
+    if (glm::distance(glm::vec2(p.pos.x, p.pos.z), p2) < footprint * 0.5f + p.radius)
+      return false;
+  }
+  return true;
+}
+
+bool World::tryPlaceScaffold(int scaffoldIdx, BuildingType civicChoice) {
+  if (scaffoldIdx < 0 || scaffoldIdx >= static_cast<int>(props.size())) return false;
+  Prop& s = props[scaffoldIdx];
+  if (!s.alive || s.type != PropType::Scaffold) return false;
+  int count = std::clamp(static_cast<int>(std::lround(s.resource)), 1,
+                         tune::kMaxScaffoldStack);
+  if (!scaffoldPlacementValid(s.pos, count)) return false;
+
+  BuildingType type = Village::buildingForStack(count, civicChoice);
+  if (type == BuildingType::Center) {
+    // Upgrade the totem in place.
+    Building& c = village.buildings[village.centerIdx];
+    c.level = std::min(3, c.level + 1);
+    s.alive = false;
+    s.held = false;
+    return true;
+  }
+
+  Building b;
+  b.type = type;
+  b.pos = glm::vec3(s.pos.x, terrain.heightAt(s.pos.x, s.pos.z), s.pos.z);
+  glm::vec2 toCenter = glm::vec2(village.center.x, village.center.z) -
+                       glm::vec2(s.pos.x, s.pos.z);
+  b.yaw = std::atan2(toCenter.x, toCenter.y);
+  b.stage = 0;
+  b.tier = count;      // scaffolds ARE the material: no wood hauling
+  b.woodCost = 0;
+  village.buildings.push_back(b);
+  s.alive = false;
+  s.held = false;
+  return true;
 }
 
 int World::pickProp(const glm::vec3& origin, const glm::vec3& dir, float maxDist) const {
