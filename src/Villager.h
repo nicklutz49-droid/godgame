@@ -15,7 +15,7 @@ enum class Job : std::uint8_t {
   Farmer,
   Fisherman,
   Builder,
-  // reserved (do not add yet): Worshipper - the belief slice claims this slot.
+  Worshipper,  // dances at the village center totem, generating mana
 };
 
 enum class VState : std::uint8_t {
@@ -86,4 +86,5 @@ struct Villager {
   bool lookAtHand = false;          // render hint: head-track the hand
   float headLook = 0.0f;            // smoothed head yaw offset toward the hand
   float assignedFlash = 0.0f;       // brief highlight after drop-to-assign
+  float danceAngle = 0.0f;          // worshipper's position on the totem ring
 };

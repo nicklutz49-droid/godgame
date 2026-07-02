@@ -64,6 +64,28 @@ inline constexpr float kMaxThrowSpeed = 70.0f;
 inline constexpr float kPanicSeconds = 4.0f;
 inline constexpr float kReactRadiusPerAltitude = 1.5f;  // hand low = scarier
 
+// --- worship, belief, mana, miracles ---
+inline constexpr float kManaStart = 20.0f;
+inline constexpr float kManaMax = 100.0f;
+inline constexpr float kManaPerWorshipperPerDay = 60.0f;  // scaled by belief
+inline constexpr float kWorshipHungerFactor = 1.6f;   // dancing is hard work
+inline constexpr float kWorshipEnergyFactor = 1.8f;
+inline constexpr float kWorshipDanceRadius = 3.6f;    // ring around the totem
+inline constexpr float kWorshipDanceRate = 0.35f;     // rad/s circling speed
+inline constexpr float kBeliefStart = 0.25f;
+inline constexpr float kBeliefFloor = 0.12f;
+inline constexpr float kBeliefDecayPerDay = 0.08f;
+inline constexpr float kBeliefFromWorshipPerDay = 0.06f;  // per active dancer
+inline constexpr float kAweGrab = 0.004f;
+inline constexpr float kAweThrow = 0.012f;
+inline constexpr float kAweGift = 0.03f;
+inline constexpr float kAweMiracle = 0.09f;
+inline constexpr float kTempleInfluence = 70.0f;      // base ring radius
+inline constexpr float kVillageInfluenceBase = 50.0f;
+inline constexpr float kVillageInfluenceScale = 90.0f;  // + belief * this
+inline constexpr float kFoodMiracleCost = 30.0f;
+inline constexpr int kFoodMiracleBundles = 4;
+
 // --- mortality seam (this slice: invulnerable) ---
 inline constexpr bool kVillagersInvulnerable = true;
 inline constexpr float kLethalImpactSpeed = 26.0f;  // unused while invulnerable

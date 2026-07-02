@@ -58,6 +58,37 @@ MeshData villagerLeg() {
 
 // ------------------------------------------------------------------ buildings
 
+MeshData temple() {
+  MeshData md;
+  const glm::vec3 stoneLight(0.72f, 0.70f, 0.66f);
+  const glm::vec3 stoneDark(0.55f, 0.53f, 0.50f);
+  // Three-step platform.
+  md.addBox(at(0.0f, 0.35f, 0.0f), {5.2f, 0.35f, 5.2f}, stoneDark);
+  md.addBox(at(0.0f, 0.95f, 0.0f), {4.2f, 0.25f, 4.2f}, stoneLight);
+  md.addBox(at(0.0f, 1.40f, 0.0f), {3.3f, 0.20f, 3.3f}, stoneDark);
+  // Steps down the front (+z).
+  md.addBox(at(0.0f, 0.35f, 5.9f), {1.6f, 0.35f, 0.7f}, stoneLight);
+  md.addBox(at(0.0f, 0.90f, 4.9f), {1.4f, 0.28f, 0.7f}, stoneDark);
+  // Columns at the corners of the top platform.
+  for (int sx = -1; sx <= 1; sx += 2)
+    for (int sz = -1; sz <= 1; sz += 2)
+      md.addCylinder(at(sx * 2.5f, 3.4f, sz * 2.5f), 0.38f, 0.34f, 3.6f, 8, stoneLight);
+  // Roof slabs.
+  md.addBox(at(0.0f, 5.35f, 0.0f), {3.2f, 0.18f, 3.2f}, stoneDark);
+  md.addBox(at(0.0f, 5.75f, 0.0f), {2.4f, 0.16f, 2.4f}, stoneLight);
+  return md;
+}
+
+MeshData templeCrystal() {
+  MeshData md;  // a gold obelisk floating in the sanctum
+  const glm::vec3 gold(1.0f, 0.85f, 0.40f);
+  md.addCylinder(at(0.0f, 2.9f, 0.0f), 0.55f, 0.0f, 1.7f, 6, gold);
+  glm::mat4 flip = at(0.0f, 1.75f, 0.0f);
+  flip = glm::rotate(flip, 3.14159f, glm::vec3(1, 0, 0));
+  md.addCylinder(flip, 0.55f, 0.0f, 1.0f, 6, gold * 0.85f);
+  return md;
+}
+
 MeshData houseStage(int stage) {
   MeshData md;
   const float hw = 2.3f, hd = 1.9f;  // half extents

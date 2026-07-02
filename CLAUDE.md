@@ -3,7 +3,8 @@
 Black & White inspired god game in C++20 / OpenGL 3.3 / SDL2. No creature.
 All art is procedural placeholder; original B&W assets may be wired in later
 behind the existing interfaces (Terrain, Mesh). Personal project, no
-distribution. Current slice: living village (see docs/plan-villagers.md).
+distribution. Slices so far: living village (docs/plan-villagers.md),
+worship/belief/mana/temple + food miracle (docs/plan-worship.md).
 
 ## Build & test
 
@@ -59,6 +60,12 @@ for SDL2/glm when system packages are missing — don't add hard system deps.
 - Physics: single sphere vs heightfield per prop/villager (shared
   `Physics.h` ballistic step), no body-body collision.
 - Villager AI: priority ladder (physical > fear > sleep > hunger >
-  [worship-reserved] > job > idle) on a staggered 0.4 s think tick; jobs are
-  flat per-job state machines in Villagers.cpp. Steering only, no A*.
+  [communal-worship-reserved] > job > idle) on a staggered 0.4 s think tick;
+  jobs (incl. Worshipper, whose dance is continuous) are flat per-job state
+  machines in Villagers.cpp. Steering only, no A*.
+- Belief/mana flow through fixed funnels: all divine acts call
+  `Village::notifyDivineEvent(where, fear, awe)`; only the worship dance adds
+  mana (`World::temple.mana`); only `World::castFoodMiracle` (and future
+  miracles) spend it. Influence checks go through `World::insideInfluence` —
+  the hand and future casts must respect it.
 - Keep everything working on llvmpipe (no GL extensions beyond 3.3 core).

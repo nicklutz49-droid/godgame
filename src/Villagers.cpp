@@ -157,6 +157,15 @@ void planFarmer(World& w, int i) {
     v.moveTarget = xz(w.village.storagePos());
     return;
   }
+  // Loose food (dropped cargo, miracle bundles) gets gathered first.
+  int loose = nearestProp(w, v, i, [](const Prop& p) { return p.type == PropType::Food; });
+  if (loose >= 0) {
+    w.props[loose].claimedBy = i;
+    v.targetProp = loose;
+    v.state = VState::GoTo;
+    v.moveTarget = xz(w.props[loose].pos);
+    return;
+  }
   auto& cells = w.village.farmCells;
   int ripe = -1, least = -1;
   float leastG = 0.96f;
@@ -211,6 +220,23 @@ void planFisherman(World& w, int i) {
                                 1.6f;
 }
 
+void planWorshipper(World& w, int i) {
+  Villager& v = w.village.villagers[i];
+  if (w.village.centerIdx < 0) {
+    v.state = VState::Wander;
+    v.moveTarget = xz(w.village.center);
+    return;
+  }
+  const Building& totem = w.village.buildings[w.village.centerIdx];
+  // Join the dance ring wherever is closest to where they stand.
+  glm::vec2 from = xz(v.pos) - xz(totem.pos);
+  v.danceAngle = glm::length(from) > 0.5f ? std::atan2(from.x, from.y)
+                                          : static_cast<float>(i) * 1.3f;
+  v.state = VState::GoTo;
+  v.moveTarget = xz(totem.pos) + glm::vec2(std::sin(v.danceAngle), std::cos(v.danceAngle)) *
+                                     tune::kWorshipDanceRadius;
+}
+
 void planBuilder(World& w, int i) {
   Villager& v = w.village.villagers[i];
   int site = openBuildSite(w);
@@ -245,6 +271,7 @@ void planJob(World& w, int i) {
     case Job::Farmer: planFarmer(w, i); break;
     case Job::Fisherman: planFisherman(w, i); break;
     case Job::Builder: planBuilder(w, i); break;
+    case Job::Worshipper: planWorshipper(w, i); break;
     default: break;
   }
 }
@@ -333,6 +360,9 @@ void arriveAtTarget(World& w, int i) {
         v.state = VState::Work;
         v.workTimer = tune::kCastSeconds;
         v.workCount = 0;
+      } else if (v.job == Job::Worshipper) {
+        v.state = VState::Work;  // the dance is continuous (see update)
+        v.workTimer = 1.0f;
       } else if (v.targetBuilding >= 0) {
         Building& b = w.village.buildings[v.targetBuilding];
         bool atSite = glm::distance(xz(b.pos), xz(v.pos)) < 4.0f;
@@ -380,8 +410,8 @@ void workCycleComplete(World& w, int i) {
   // Job-specific work.
   if (v.targetProp >= 0) {
     Prop& p = w.props[v.targetProp];
-    if (p.type == PropType::Log) {
-      // Shoulder the log.
+    if (p.type == PropType::Log || p.type == PropType::Food) {
+      // Shoulder it and head for the pile.
       p.carrier = i;
       p.claimedBy = -1;
       v.carriedProp = v.targetProp;
@@ -568,6 +598,12 @@ void steer(World& w, int i, float dt) {
     float rr = p.radius * 0.8f + 0.5f;
     obstacles[obstacleCount++] = {xz(p.pos), rr * rr};
     if (obstacleCount == 12) break;
+  }
+  if (w.temple.founded && obstacleCount < 12) {
+    glm::vec2 d = glm::vec2(w.temple.pos.x, w.temple.pos.z) - xz(v.pos);
+    if (glm::dot(d, d) < 10.0f * 10.0f)
+      obstacles[obstacleCount++] = {glm::vec2(w.temple.pos.x, w.temple.pos.z),
+                                    4.5f * 4.5f};
   }
 
   static const float offsets[5] = {0.0f, -0.55f, 0.55f, -1.15f, 1.15f};
@@ -771,14 +807,18 @@ void villagersUpdate(World& world, float dt) {
       v.scale = std::min(1.0f, v.scale + dayFrac * (1.0f - tune::kChildScale) /
                                              tune::kChildGrowDays);
 
-    // Needs. (MORTALITY SEAM: starvation death later replaces the 1.0 clamp.)
+    // Needs. Dancing for a god is hard work. (MORTALITY SEAM: starvation
+    // death later replaces the 1.0 clamp.)
     bool sleeping = v.state == VState::Sleep;
+    bool worshipping = v.job == Job::Worshipper && v.state == VState::Work;
     if (v.state != VState::Eat)
-      v.hunger = std::min(1.0f, v.hunger + tune::kHungerPerDay * dayFrac);
+      v.hunger = std::min(1.0f, v.hunger + tune::kHungerPerDay * dayFrac *
+                                    (worshipping ? tune::kWorshipHungerFactor : 1.0f));
     if (sleeping)
       v.energy = std::min(1.0f, v.energy + tune::kEnergyRestorePerDay * dayFrac);
     else
-      v.energy = std::max(0.0f, v.energy - tune::kEnergyDrainPerDay * dayFrac);
+      v.energy = std::max(0.0f, v.energy - tune::kEnergyDrainPerDay * dayFrac *
+                                    (worshipping ? tune::kWorshipEnergyFactor : 1.0f));
     v.fear = std::max(0.0f, v.fear - tune::kFearDecayPerSec * dt);
     v.assignedFlash = std::max(0.0f, v.assignedFlash - dt);
     if (v.blacklistTimer > 0.0f) {
@@ -944,6 +984,29 @@ void villagersUpdate(World& world, float dt) {
         }
         break;
       case VState::Work:
+        // Worship is a continuous circling dance, not a timed cycle: the
+        // dancer orbits the totem, generating mana and sustaining belief.
+        if (v.job == Job::Worshipper && world.village.centerIdx >= 0) {
+          const Building& totem = world.village.buildings[world.village.centerIdx];
+          v.danceAngle += tune::kWorshipDanceRate * dt;
+          glm::vec2 ring = xz(totem.pos) +
+                           glm::vec2(std::sin(v.danceAngle), std::cos(v.danceAngle)) *
+                               tune::kWorshipDanceRadius;
+          v.pos.x += (ring.x - v.pos.x) * std::min(1.0f, 4.0f * dt);
+          v.pos.z += (ring.y - v.pos.z) * std::min(1.0f, 4.0f * dt);
+          v.pos.y = world.terrain.heightAt(v.pos.x, v.pos.z);
+          v.yaw = std::atan2(totem.pos.x - v.pos.x, totem.pos.z - v.pos.z);
+          v.walkPhase += dt * 4.2f;
+          if (world.temple.founded) {
+            float mult = 0.5f + 1.5f * world.village.belief;
+            world.temple.mana = std::min(
+                world.temple.manaMax,
+                world.temple.mana + tune::kManaPerWorshipperPerDay * mult * dayFrac);
+          }
+          world.village.belief = std::min(
+              1.0f, world.village.belief + tune::kBeliefFromWorshipPerDay * dayFrac);
+          break;
+        }
         v.workTimer -= dt;
         // Builders hammering advance the site continuously.
         if (v.job == Job::Builder && v.targetBuilding >= 0 && v.carriedProp < 0) {
@@ -1026,7 +1089,7 @@ void villagerGrabbed(World& world, int idx) {
   releaseClaims(world, v, idx);
   v.fear = 1.0f;
   v.pendingAssign = false;
-  world.village.notifyDivineEvent(v.pos, 0.55f);
+  world.village.notifyDivineEvent(v.pos, 0.55f, tune::kAweGrab);
 }
 
 void villagerReleased(World& world, int idx, const glm::vec3& velocity, bool gentle) {
@@ -1046,7 +1109,7 @@ void villagerReleased(World& world, int idx, const glm::vec3& velocity, bool gen
     glm::vec3 spinAxis = glm::cross(
         glm::normalize(vel + glm::vec3(0, 0.001f, 0)), glm::vec3(0, 1, 0));
     v.angVel = spinAxis * std::min(speed * 0.12f, 5.0f);
-    world.village.notifyDivineEvent(v.pos, 0.8f);
+    world.village.notifyDivineEvent(v.pos, 0.8f, tune::kAweThrow);
   }
 }
 
@@ -1213,6 +1276,14 @@ VillagerPose computeVillagerPose(const Villager& v, float time) {
           rootY = -0.18f;
           torsoPitch = 0.35f;
           armRaiseR = -1.0f + 0.5f * std::sin(time * 9.0f);
+          break;
+        case Job::Worshipper:
+          // Ecstatic dance: both arms high, swaying, bouncing steps.
+          armRaiseL = -2.6f + 0.35f * std::sin(time * 3.1f + phase);
+          armRaiseR = -2.6f + 0.35f * std::sin(time * 3.1f + phase + 1.6f);
+          legSwing = 0.35f * std::sin(phase);
+          rootY = 0.07f * std::fabs(std::sin(phase));
+          torsoPitch = 0.05f + 0.06f * std::sin(time * 2.1f);
           break;
         default:
           rootY = -0.3f;  // generic crouch (picking something up)

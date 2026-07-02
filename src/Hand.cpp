@@ -73,6 +73,14 @@ void Hand::update(float dt, const glm::vec3& rayOrigin, const glm::vec3& rayDir,
     targetPos = p + glm::vec3(0, radius + 1.1f, 0);
   } else {
     hover = pickTarget(world, rayOrigin, rayDir, 900.0f);
+    // The hand can only act inside the god's influence: outside the rings it
+    // can look, but nothing highlights and nothing can be grabbed.
+    if (!hover.none()) {
+      const glm::vec3& tp = hover.isVillager()
+                                ? world.village.villagers[hover.index].pos
+                                : world.props[hover.index].pos;
+      if (!world.insideInfluence(tp)) hover.clear();
+    }
     if (hover.isProp()) {
       const Prop& p = world.props[hover.index];
       targetPos = p.pos + glm::vec3(0, p.radius * 0.6f + 0.7f, 0);
@@ -130,12 +138,14 @@ void Hand::release(World& world) {
     if (speed > kMaxThrowSpeed) v *= kMaxThrowSpeed / speed;
     int idx = held.index;
     world.throwProp(idx, v);
-    // Gentle placement over the storage pad deposits resources immediately.
+    // Gentle placement over the storage pad deposits resources immediately -
+    // a gift from the god, and the village believes a little more for it.
     Prop& p = world.props[idx];
     if (gentle && world.village.founded && world.village.inStorageRadius(p.pos) &&
         (p.type == PropType::Log || p.type == PropType::Food ||
          p.type == PropType::Tree)) {
       world.village.absorbProp(world, idx);
+      world.village.notifyDivineEvent(p.pos, 0.0f, tune::kAweGift);
     }
   }
 

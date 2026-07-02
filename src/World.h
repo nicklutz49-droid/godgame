@@ -47,6 +47,17 @@ struct Prop {
   int carrier = -1;      // villager index carrying this prop
 };
 
+// The god's seat of power: stands apart from any village, stores the mana
+// pool that worship fills and miracles spend, and projects the base
+// influence ring.
+struct Temple {
+  bool founded = false;
+  glm::vec3 pos{0.0f};
+  float yaw = 0.0f;
+  float mana = 0.0f;
+  float manaMax = 100.0f;
+};
+
 class World {
  public:
   // Mesh-space half height of the tree model; trees plant so the trunk base
@@ -56,6 +67,7 @@ class World {
   Terrain terrain;
   std::vector<Prop> props;
   Village village;
+  Temple temple;
   DayCycle dayCycle;
 
   // The divine hand, as the sim sees it (set by the app / test harness each
@@ -76,9 +88,18 @@ class World {
   // Reuses a dead slot when possible; returns the prop's index.
   int spawnProp(const Prop& p);
 
+  // Is this point within the god's reach (temple ring or any village ring)?
+  bool insideInfluence(const glm::vec3& p) const;
+
+  // Rain food from the sky at p. Fails (returns false) outside influence or
+  // with insufficient mana. Deterministic per cast via its own stream.
+  bool castFoodMiracle(const glm::vec3& p);
+
   std::uint32_t seed() const { return seed_; }
 
  private:
+  void foundTemple();
   void scatterProps();
   std::uint32_t seed_ = 1;
+  std::uint32_t miracleCounter_ = 0;
 };

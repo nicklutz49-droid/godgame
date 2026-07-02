@@ -23,14 +23,101 @@ bool propFloats(PropType t) {
 
 void World::generate(std::uint32_t seed) {
   seed_ = seed;
+  miracleCounter_ = 0;
   terrain.generate(seed);
   village = Village{};
   village.plan(*this, seed);   // flattens the site before the mesh is built
+  temple = Temple{};
+  foundTemple();               // also flattens; must precede prop scatter
   scatterProps();
   village.spawnVillagers(*this, seed);
   dayCycle = DayCycle{};
   handPos = glm::vec3(0.0f, 1.0e9f, 0.0f);
   handSpeed = 0.0f;
+}
+
+void World::foundTemple() {
+  if (!village.founded) return;
+  // Just outside the village on the first workable compass direction. The
+  // field direction (index 2) is excluded so its terrace is never disturbed.
+  static const glm::vec2 kDirs[7] = {
+      {0.70711f, 0.70711f},   {0.70711f, -0.70711f}, {-0.70711f, 0.70711f},
+      {-0.70711f, -0.70711f}, {1.0f, 0.0f},          {-1.0f, 0.0f},
+      {0.0f, -1.0f}};
+  glm::vec2 c(village.center.x, village.center.z);
+  glm::vec2 best = c + kDirs[0] * 48.0f;
+  bool placed = false;
+  // Area-averaged flatness, not a single sample - a lone flat point on a
+  // mountainside would carve an ugly notch when terraced.
+  auto flatAvg = [&](glm::vec2 p) {
+    float sum = 0.0f;
+    for (int j = -2; j <= 2; ++j)
+      for (int i = -2; i <= 2; ++i)
+        sum += terrain.normalAt(p.x + static_cast<float>(i) * 5.0f,
+                                p.y + static_cast<float>(j) * 5.0f).y;
+    return sum / 25.0f;
+  };
+  for (float minFlat : {0.90f, 0.84f}) {
+    for (float dist : {48.0f, 56.0f, 64.0f}) {
+      for (const glm::vec2& dir : kDirs) {
+        glm::vec2 p = c + dir * dist;
+        if (terrain.heightAt(p.x, p.y) < 1.5f) continue;
+        if (flatAvg(p) < minFlat) continue;
+        best = p;
+        placed = true;
+        break;
+      }
+      if (placed) break;
+    }
+    if (placed) break;
+  }
+  // Paranoia fallback: terraform hard wherever the first candidate was.
+  float targetH = std::clamp(terrain.heightAt(best.x, best.y), 2.5f, 14.0f);
+  terrain.flattenDisc(best.x, best.y, 16.0f, targetH, placed ? 0.95f : 1.0f);
+  temple.founded = true;
+  temple.pos = glm::vec3(best.x, terrain.heightAt(best.x, best.y), best.y);
+  temple.yaw = std::atan2(village.center.x - best.x, village.center.z - best.y);
+  temple.mana = tune::kManaStart;
+  temple.manaMax = tune::kManaMax;
+}
+
+bool World::insideInfluence(const glm::vec3& p) const {
+  if (temple.founded &&
+      glm::distance(glm::vec2(p.x, p.z), glm::vec2(temple.pos.x, temple.pos.z)) <
+          tune::kTempleInfluence)
+    return true;
+  if (village.founded &&
+      glm::distance(glm::vec2(p.x, p.z),
+                    glm::vec2(village.center.x, village.center.z)) <
+          village.influenceRadius())
+    return true;
+  return false;
+}
+
+bool World::castFoodMiracle(const glm::vec3& p) {
+  if (!temple.founded || !insideInfluence(p)) return false;
+  if (temple.mana < tune::kFoodMiracleCost) return false;
+  temple.mana -= tune::kFoodMiracleCost;
+
+  XorShift rng(seed_ ^ (++miracleCounter_ * 0x9E3779B9u));
+  for (int k = 0; k < tune::kFoodMiracleBundles; ++k) {
+    Prop food;
+    food.type = PropType::Food;
+    food.scale = 1.0f;
+    food.radius = 0.45f;
+    food.resource = static_cast<float>(tune::kFoodPerCatch);
+    food.pos = p + glm::vec3(rng.range(-2.2f, 2.2f), 9.0f + 2.5f * static_cast<float>(k),
+                             rng.range(-2.2f, 2.2f));
+    food.vel = glm::vec3(rng.range(-0.8f, 0.8f), 0.0f, rng.range(-0.8f, 0.8f));
+    food.baseYaw = rng.range(0.0f, 6.2831f);
+    food.rot = glm::angleAxis(food.baseYaw, glm::vec3(0, 1, 0));
+    food.asleep = false;
+    spawnProp(food);
+  }
+
+  // Food from heaven is the most convincing argument there is.
+  village.notifyDivineEvent(p, 0.05f, tune::kAweMiracle);
+  return true;
 }
 
 float World::restHeight(const Prop& p) const {
@@ -82,6 +169,9 @@ void World::scatterProps() {
     if (h < 2.2f || h > 30.0f) continue;
     if (terrain.normalAt(x, z).y < 0.82f) continue;
     if (village.insideFootprint(x, z)) continue;
+    if (temple.founded && glm::distance(glm::vec2(x, z),
+                                        glm::vec2(temple.pos.x, temple.pos.z)) < 18.0f)
+      continue;
     float forest = noise::fbm(x * 0.016f, z * 0.016f, 3, seed_ + 31u);
     if (forest < 0.52f && !(forest > 0.40f && rng.uniform() < 0.15f)) continue;
     if (occupied.count(cellKey(x, z))) continue;
@@ -108,6 +198,9 @@ void World::scatterProps() {
     float h = terrain.heightAt(x, z);
     if (h < -3.0f) continue;  // allow a few in the shallows
     if (village.insideFootprint(x, z)) continue;
+    if (temple.founded && glm::distance(glm::vec2(x, z),
+                                        glm::vec2(temple.pos.x, temple.pos.z)) < 18.0f)
+      continue;
 
     Prop p;
     p.type = PropType::Rock;

@@ -207,6 +207,29 @@ bool writeBMP(const char* path, int w, int h, const std::vector<unsigned char>& 
   return true;
 }
 
+// A terrain-following band at `radius` around `center` - the influence ring.
+MeshData buildRingMeshData(const Terrain& terrain, glm::vec2 center, float radius) {
+  MeshData md;
+  const int kSegments = 120;
+  const float kHalfWidth = 0.55f;
+  const glm::vec3 gold(1.0f, 0.88f, 0.45f);
+  for (int s = 0; s <= kSegments; ++s) {
+    float a = 6.2831853f * static_cast<float>(s) / kSegments;
+    glm::vec2 dir(std::sin(a), std::cos(a));
+    for (float r : {radius - kHalfWidth, radius + kHalfWidth}) {
+      glm::vec2 p = center + dir * r;
+      float y = std::max(terrain.heightAt(p.x, p.y), Terrain::WATER_LEVEL) + 0.18f;
+      md.addVertex(glm::vec3(p.x, y, p.y), glm::vec3(0, 1, 0), gold);
+    }
+  }
+  for (int s = 0; s < kSegments; ++s) {
+    std::uint32_t a = static_cast<std::uint32_t>(s) * 2;
+    md.addTriangle(a, a + 1, a + 2);
+    md.addTriangle(a + 1, a + 3, a + 2);
+  }
+  return md;
+}
+
 glm::mat4 orientToNormal(const glm::vec3& n) {
   if (n.y > 0.999f) return glm::mat4(1.0f);
   glm::vec3 axis = glm::normalize(glm::cross(glm::vec3(0, 1, 0), n));
@@ -241,6 +264,16 @@ struct App {
   Mesh woodPileMesh, foodPileMesh, campfireMesh, flameMesh;
   Mesh fieldSlabMesh, cropMesh, smokeDisc;
   Mesh bubbleHungerMesh, bubbleSleepMesh, bubbleFearMesh;
+  Mesh templeMesh, templeCrystalMesh;
+  Mesh templeRing, villageRing;
+  float lastVillageRingR = -1.0f;
+
+  // Short-lived cast feedback (expanding gold pulse at miracle points).
+  struct CastEffect {
+    glm::vec3 pos;
+    float age;
+  };
+  std::vector<CastEffect> effects;
 
   std::uint32_t seed = 20260702u;
   bool quit = false;
@@ -366,6 +399,8 @@ void App::initScene() {
   bubbleHungerMesh.upload(models::bubbleHunger());
   bubbleSleepMesh.upload(models::bubbleSleep());
   bubbleFearMesh.upload(models::bubbleFear());
+  templeMesh.upload(models::temple());
+  templeCrystalMesh.upload(models::templeCrystal());
 
   rebuildWorld(seed);
 }
@@ -377,6 +412,17 @@ void App::rebuildWorld(std::uint32_t newSeed) {
   hand.mode = Hand::Mode::Free;
   hand.held.clear();
   hand.hover.clear();
+  effects.clear();
+  if (world.temple.founded)
+    templeRing.upload(buildRingMeshData(
+        world.terrain, glm::vec2(world.temple.pos.x, world.temple.pos.z),
+        tune::kTempleInfluence));
+  if (world.village.founded) {
+    lastVillageRingR = world.village.influenceRadius();
+    villageRing.upload(buildRingMeshData(
+        world.terrain, glm::vec2(world.village.center.x, world.village.center.z),
+        lastVillageRingR));
+  }
   SDL_Log("World seed %u | land %.0f%% | height %.1f..%.1f | %zu props | village (%.0f, %.0f), pop %d",
           seed, world.terrain.landFraction() * 100.0f, world.terrain.minHeight(),
           world.terrain.maxHeight(), world.props.size(), world.village.center.x,
@@ -459,6 +505,20 @@ void App::handleEvent(const SDL_Event& e) {
           world.village.wood += 10;
           world.village.food += 10;
           break;
+        case SDLK_m:
+          if (hand.hasGround) {
+            if (world.castFoodMiracle(hand.groundPoint)) {
+              effects.push_back({hand.groundPoint, 0.0f});
+              SDL_Log("food miracle! mana %.0f/%.0f", world.temple.mana,
+                      world.temple.manaMax);
+            } else if (!world.insideInfluence(hand.groundPoint)) {
+              SDL_Log("cannot cast: outside your influence");
+            } else {
+              SDL_Log("cannot cast: need %.0f mana (have %.0f)",
+                      tune::kFoodMiracleCost, world.temple.mana);
+            }
+          }
+          break;
         case SDLK_r:
           rebuildWorld(seed * 1664525u + 1013904223u);
           break;
@@ -540,6 +600,20 @@ void App::update(float dt) {
 
   // F4 time-lapse scales the sim only; camera and hand stay real-time.
   for (int step = 0; step < simSpeed; ++step) world.update(dt);
+
+  // The village ring grows/shrinks with belief; rebuild it on real change.
+  if (world.village.founded &&
+      std::abs(world.village.influenceRadius() - lastVillageRingR) > 0.75f) {
+    lastVillageRingR = world.village.influenceRadius();
+    villageRing.upload(buildRingMeshData(
+        world.terrain, glm::vec2(world.village.center.x, world.village.center.z),
+        lastVillageRingR));
+  }
+
+  for (CastEffect& e : effects) e.age += dt;
+  effects.erase(std::remove_if(effects.begin(), effects.end(),
+                               [](const CastEffect& e) { return e.age > 1.2f; }),
+                effects.end());
 }
 
 namespace {
@@ -550,6 +624,7 @@ glm::vec3 jobTint(Job j) {
     case Job::Farmer: return {0.95f, 0.80f, 0.42f};
     case Job::Fisherman: return {0.45f, 0.65f, 0.95f};
     case Job::Builder: return {0.90f, 0.50f, 0.35f};
+    case Job::Worshipper: return {1.0f, 0.94f, 0.55f};  // robed in gold
     default: return {0.85f, 0.82f, 0.75f};  // undyed
   }
 }
@@ -633,8 +708,13 @@ void App::render(float time) {
   }
   lit.set("uEmissive", 0.0f);
 
-  // Village buildings.
+  // Village buildings. The totem glows when worshippers are dancing.
   const Village& vil = world.village;
+  int dancers = vil.activeWorshippers();
+  float totemGlow =
+      dancers > 0 ? std::min(0.5f, 0.15f * static_cast<float>(dancers)) +
+                        0.05f * std::sin(time * 2.3f)
+                  : 0.0f;
   for (std::size_t b = 0; b < vil.buildings.size(); ++b) {
     const Building& bd = vil.buildings[b];
     if (bd.stage < 0) continue;  // reserved plot, invisible
@@ -642,11 +722,35 @@ void App::render(float time) {
                       glm::rotate(glm::mat4(1.0f), bd.yaw, glm::vec3(0, 1, 0));
     lit.set("uModel", model);
     switch (bd.type) {
-      case BuildingType::Center: totemMesh.draw(); break;
+      case BuildingType::Center:
+        lit.set("uEmissive", totemGlow);
+        totemMesh.draw();
+        lit.set("uEmissive", 0.0f);
+        break;
       case BuildingType::Storage: storagePadMesh.draw(); break;
       case BuildingType::Campfire: campfireMesh.draw(); break;
       case BuildingType::House: houseStages[std::clamp(bd.stage, 0, 3)].draw(); break;
     }
+  }
+
+  // The temple: the god's seat, its crystal glowing with stored mana.
+  if (world.temple.founded) {
+    glm::mat4 tm = glm::translate(glm::mat4(1.0f), world.temple.pos) *
+                   glm::rotate(glm::mat4(1.0f), world.temple.yaw, glm::vec3(0, 1, 0));
+    lit.set("uModel", tm);
+    templeMesh.draw();
+    float manaFrac = world.temple.manaMax > 0.0f
+                         ? world.temple.mana / world.temple.manaMax
+                         : 0.0f;
+    // The beacon floats above the roof so the mana level reads from anywhere.
+    lit.set("uEmissive",
+            0.30f + 0.60f * manaFrac + 0.05f * std::sin(time * 3.1f));
+    lit.set("uModel", tm * glm::translate(glm::mat4(1.0f),
+                                          glm::vec3(0, 4.9f + 0.25f * std::sin(time * 1.1f), 0)) *
+                          glm::rotate(glm::mat4(1.0f), time * 0.5f, glm::vec3(0, 1, 0)) *
+                          glm::scale(glm::mat4(1.0f), glm::vec3(1.25f)));
+    templeCrystalMesh.draw();
+    lit.set("uEmissive", 0.0f);
   }
   if (vil.founded) {
     // Stock piles scale with the stores - a glanceable economy gauge.
@@ -803,6 +907,45 @@ void App::render(float time) {
       }
     }
   }
+
+  // Influence rings: where the god's hand may act.
+  {
+    lit.set("uModel", glm::mat4(1.0f));
+    lit.set("uAlpha", 0.26f + 0.06f * std::sin(time * 1.8f));
+    if (templeRing.valid()) templeRing.draw();
+    if (villageRing.valid()) villageRing.draw();
+  }
+
+  // Prayer motes above dancing worshippers, and miracle cast pulses.
+  lit.set("uTint", glm::vec3(0.98f, 0.82f, 0.38f));
+  for (std::size_t i = 0; i < vil.villagers.size(); ++i) {
+    const Villager& v = vil.villagers[i];
+    if (!(v.job == Job::Worshipper && v.state == VState::Work) || v.inside) continue;
+    for (int k = 0; k < 2; ++k) {
+      float cycle = 2.4f;
+      float yo = std::fmod(time * 1.1f + static_cast<float>(k) * 1.2f +
+                               static_cast<float>(i) * 0.37f,
+                           cycle);
+      float frac = yo / cycle;
+      glm::vec3 p = v.pos + glm::vec3(0.35f * std::sin(time * 1.3f + static_cast<float>(i + k)),
+                                      1.7f * v.scale + yo * 1.3f,
+                                      0.35f * std::cos(time * 1.1f + static_cast<float>(i)));
+      lit.set("uModel", glm::translate(glm::mat4(1.0f), p) *
+                            glm::scale(glm::mat4(1.0f), glm::vec3(0.16f)));
+      lit.set("uAlpha", 0.55f * (1.0f - frac));
+      smokeDisc.draw();
+    }
+  }
+  for (const CastEffect& e : effects) {
+    float frac = e.age / 1.2f;
+    float y = world.terrain.heightAt(e.pos.x, e.pos.z) + 0.3f;
+    lit.set("uModel", glm::translate(glm::mat4(1.0f), glm::vec3(e.pos.x, y, e.pos.z)) *
+                          glm::scale(glm::mat4(1.0f), glm::vec3(2.0f + frac * 22.0f)));
+    lit.set("uAlpha", 0.55f * (1.0f - frac));
+    smokeDisc.draw();
+  }
+  lit.set("uTint", glm::vec3(1.0f));
+
   lit.set("uAlpha", 1.0f);
   lit.set("uEmissive", 0.0f);
   gl.DepthMask(GL_TRUE);
@@ -821,10 +964,14 @@ void App::render(float time) {
                         glm::rotate(glm::mat4(1.0f), -0.30f, glm::vec3(1, 0, 0)) *
                         glm::scale(glm::mat4(1.0f), glm::vec3(handScale));
   lit.set("uModel", handModel);
-  lit.set("uAlpha", 0.95f);
+  // Outside the god's influence the hand turns ghostly - look, don't touch.
+  const bool reach = !hand.hasGround || world.insideInfluence(hand.groundPoint);
+  lit.set("uTint", reach ? glm::vec3(1.0f) : glm::vec3(0.55f, 0.62f, 0.82f));
+  lit.set("uAlpha", reach ? 0.95f : 0.45f);
   lit.set("uEmissive", 0.35f);
   const bool closed = hand.mode == Hand::Mode::Carry || panning;
   (closed ? handClosed : handOpen).draw();
+  lit.set("uTint", glm::vec3(1.0f));
   lit.set("uAlpha", 1.0f);
   lit.set("uEmissive", 0.0f);
   gl.DepthMask(GL_TRUE);
@@ -842,6 +989,8 @@ int App::runInteractive() {
   SDL_Log("  Right/middle-drag    rotate & tilt camera");
   SDL_Log("  Mouse wheel          zoom toward cursor");
   SDL_Log("  WASD/arrows Q E      move / rotate, Shift = faster");
+  SDL_Log("  M                    food miracle at the cursor (30 mana, inside influence)");
+  SDL_Log("  Drop a villager on the totem to make a Worshipper - worship fills your mana");
   SDL_Log("  R new island   T advance time   F2 wireframe   Esc quit");
   SDL_Log("  Debug: F3 state tint   F4 sim speed   K spawn villager   L +10 res");
 
@@ -867,11 +1016,13 @@ int App::runInteractive() {
     fpsTimer += dt;
     ++fpsFrames;
     if (fpsTimer >= 0.5f) {
-      char title[128];
+      char title[160];
       std::snprintf(title, sizeof(title),
-                    "godgame - %.0f fps | pop %d  wood %d  food %d | day %.2f",
+                    "godgame - %.0f fps | pop %d  wood %d  food %d | mana %.0f  "
+                    "belief %.0f%% | day %.2f",
                     fpsFrames / fpsTimer, world.village.population(),
-                    world.village.wood, world.village.food, world.dayCycle.t);
+                    world.village.wood, world.village.food, world.temple.mana,
+                    world.village.belief * 100.0f, world.dayCycle.t);
       SDL_SetWindowTitle(window, title);
       fpsTimer = 0.0f;
       fpsFrames = 0;
@@ -898,6 +1049,10 @@ int App::runScreenshot(const std::string& path, int frames, const std::string& v
     cam.distance = 85.0f;
     cam.yaw = 2.3f;
     if (view == "night") world.dayCycle.t = 0.93f;
+  } else if (view == "temple") {
+    cam.focus = world.temple.pos;
+    cam.distance = 55.0f;
+    cam.yaw = world.temple.yaw + 3.14159f;
   } else {
     cam.focus = glm::vec3(0.0f, 8.0f, 0.0f);
     cam.distance = 300.0f;
@@ -960,6 +1115,8 @@ std::uint64_t worldChecksum(const World& w) {
   }
   int counters[3] = {w.village.wood, w.village.food, w.village.population()};
   h = fnvMix(h, counters, sizeof counters);
+  addF(w.village.belief);
+  addF(w.temple.mana);
   addF(w.dayCycle.t);
   return h;
 }
@@ -1096,14 +1253,12 @@ int runHeadless(std::uint32_t seed, int steps) {
     }
     check(vil.resolveJobAtPoint(world, waterP) == Job::Fisherman, "water -> fisherman");
 
-    // Full gentle-placement path: set a villager down on the field.
-    Villager& v = vil.villagers[1];
-    Job before = v.job;
+    // Full gentle-placement path: set a jobless villager down on the field.
+    Villager& v = vil.villagers[5];
     v.pos = fieldP + glm::vec3(0.5f, 1.0f, 0.5f);
-    villagerReleased(world, 1, glm::vec3(0.3f, 0.0f, 0.2f), true);
+    villagerReleased(world, 5, glm::vec3(0.3f, 0.0f, 0.2f), true);
     for (int i = 0; i < 240; ++i) world.update(dt);
-    check(vil.villagers[1].job == Job::Farmer, "gently placed on field -> becomes farmer");
-    (void)before;
+    check(vil.villagers[5].job == Job::Farmer, "gently placed on field -> becomes farmer");
   }
 
   // [5] Resources dropped on the storage pad are absorbed. (Builders may be
@@ -1121,6 +1276,66 @@ int runHeadless(std::uint32_t seed, int steps) {
     world.spawnProp(log);
     for (int i = 0; i < 300; ++i) world.update(dt);
     check(vil.woodProduced == producedBefore + 1, "log dropped on storage -> +1 wood");
+  }
+
+  // [8 first, so the fresh soak worlds below stay unpolluted]
+  // Worship, mana, influence and the food miracle.
+  std::printf("[8] worship, mana & the temple\n");
+  {
+    check(world.temple.founded, "temple founded");
+    float distTV = glm::distance(glm::vec2(world.temple.pos.x, world.temple.pos.z),
+                                 glm::vec2(vil.center.x, vil.center.z));
+    std::printf("      temple at (%.0f, %.0f), %.0f m from the village | mana %.0f | belief %.2f\n",
+                world.temple.pos.x, world.temple.pos.z, distTV, world.temple.mana,
+                vil.belief);
+    check(distTV > 40.0f && distTV < 70.0f, "temple stands apart, near the village");
+    check(world.temple.pos.y > 1.0f, "temple on land");
+    check(vil.resolveJobAtPoint(world, vil.buildings[vil.centerIdx].pos) ==
+              Job::Worshipper,
+          "totem -> worshipper");
+    check(world.insideInfluence(vil.center), "village inside influence");
+    check(world.insideInfluence(world.temple.pos), "temple inside influence");
+
+    glm::vec2 c2(vil.center.x, vil.center.z);
+    glm::vec2 awayDir = glm::length(c2) > 1.0f ? -glm::normalize(c2)
+                                               : glm::vec2(0.7071f, 0.7071f);
+    glm::vec3 farPoint(awayDir.x * Terrain::SIZE * 0.45f, 0.0f,
+                       awayDir.y * Terrain::SIZE * 0.45f);
+    check(!world.insideInfluence(farPoint), "far shore outside influence");
+
+    world.temple.mana = 5.0f;
+    check(!world.castFoodMiracle(vil.center), "cast fails without mana");
+    world.temple.mana = 100.0f;
+    check(!world.castFoodMiracle(farPoint), "cast fails outside influence");
+
+    float beliefBefore = vil.belief;
+    auto countFood = [&]() {
+      int n = 0;
+      for (const Prop& p : world.props)
+        if (p.alive && p.type == PropType::Food) ++n;
+      return n;
+    };
+    int foodBefore = countFood();
+    check(world.castFoodMiracle(vil.center + glm::vec3(5.0f, 0.0f, 5.0f)),
+          "cast succeeds inside influence");
+    check(world.temple.mana == 100.0f - tune::kFoodMiracleCost, "mana was spent");
+    check(countFood() >= foodBefore + tune::kFoodMiracleBundles, "food rained from heaven");
+    check(vil.belief > beliefBefore, "witnesses believed harder");
+
+    // A fresh world: does the starter worshipper alone fill the pool?
+    World w3;
+    w3.generate(seed);
+    w3.dayCycle.secondsPerDay = 240.0f;
+    float manaStart = w3.temple.mana;
+    bool dancerSeen = false;
+    for (int i = 0; i < static_cast<int>(240.0f / dt); ++i) {
+      w3.update(dt);
+      if ((i & 127) == 0 && w3.village.activeWorshippers() > 0) dancerSeen = true;
+    }
+    std::printf("      one day of worship: mana %.0f (from %.0f), belief %.2f\n",
+                w3.temple.mana, manaStart, w3.village.belief);
+    check(dancerSeen, "the worshipper danced at the totem");
+    check(w3.temple.mana > manaStart + 5.0f, "worship generated mana");
   }
 
   // [6] Three-day economy & schedule soak. Days are shrunk to 240 s - short
@@ -1168,10 +1383,12 @@ int runHeadless(std::uint32_t seed, int steps) {
       if (b.type == BuildingType::House && b.stage == 3) ++stage3Houses;
     std::printf(
         "      wood %d (produced %d) | food %d (produced %d, eaten %d) | pop %d | "
-        "houses %d | stuck %d | midnight asleep %.0f%% | noon active %.0f%%\n",
+        "houses %d | stuck %d | midnight asleep %.0f%% | noon active %.0f%% | "
+        "mana %.0f | belief %.2f\n",
         v2.wood, v2.woodProduced, v2.food, v2.foodProduced, v2.mealsEaten,
         v2.population(), stage3Houses, v2.stuckEvents, midnightSleep * 100.0f,
-        noonActive * 100.0f);
+        noonActive * 100.0f, w2.temple.mana, v2.belief);
+    check(w2.temple.mana > tune::kManaStart, "worship filled the mana pool");
     check(finite, "all positions finite");
     check(inBounds, "everyone stayed on the island");
     check(v2.woodProduced > 0, "wood was produced");

@@ -158,14 +158,15 @@ void Village::plan(World& world, std::uint32_t seed) {
 
   wood = tune::kStartWood;
   food = tune::kStartFood;
+  belief = tune::kBeliefStart;
 }
 
 void Village::spawnVillagers(World& world, std::uint32_t seed) {
   villagers.clear();
   if (!founded) return;
   XorShift rng(seed ^ 0xC0FFEE11u);
-  const Job starterJobs[8] = {Job::Forester, Job::Farmer, Job::Fisherman,
-                              Job::Builder,  Job::None,   Job::None,
+  const Job starterJobs[8] = {Job::Forester, Job::Farmer,     Job::Fisherman,
+                              Job::Builder,  Job::Worshipper, Job::None,
                               Job::None,     Job::None};
   glm::vec3 fire = campfirePos();
   for (int i = 0; i < tune::kStartPopulation; ++i) {
@@ -188,6 +189,9 @@ void Village::step(World& world, float dt) {
   if (!founded) return;
   float dayFrac = dt / world.dayCycle.secondsPerDay;
   float sun = 0.25f + 0.75f * world.dayCycle.daylight();  // crops rest at night
+
+  // Faith fades unless the god stays present (worship counteracts this).
+  belief = std::max(tune::kBeliefFloor, belief - tune::kBeliefDecayPerDay * dayFrac);
 
   for (FarmCell& c : farmCells) {
     c.tendedTimer = std::max(0.0f, c.tendedTimer - dt);
@@ -249,7 +253,11 @@ void Village::step(World& world, float dt) {
 }
 
 Job Village::resolveJobAtPoint(const World& world, const glm::vec3& p) const {
-  // Priority: construction site > field > tree > water/shore.
+  // Priority: totem > construction site > field > tree > water/shore.
+  if (centerIdx >= 0 &&
+      glm::distance(xz(buildings[centerIdx].pos), xz(p)) < 5.0f)
+    return Job::Worshipper;
+
   for (const Building& b : buildings)
     if (b.type == BuildingType::House && b.stage >= 0 && b.stage < 3 &&
         glm::distance(xz(b.pos), xz(p)) < 6.0f)
@@ -320,15 +328,34 @@ void Village::absorbProp(World& world, int propIdx) {
   p.claimedBy = -1;
 }
 
-void Village::notifyDivineEvent(const glm::vec3& where, float magnitude) {
-  // Fear ripples out to witnesses. (The belief slice will ride this same bus:
-  // miracles witnessed, gifts received - all divine acts funnel through here.)
+void Village::notifyDivineEvent(const glm::vec3& where, float fear, float awe) {
+  // Every divine act funnels through here: fear ripples out to individual
+  // witnesses, and belief rises by how much of the village saw it.
+  int witnesses = 0;
   for (Villager& v : villagers) {
     if (v.inside) continue;
     float d = glm::distance(xz(v.pos), xz(where));
-    if (d < 30.0f)
-      v.fear = std::min(1.0f, v.fear + magnitude * (1.0f - d / 30.0f));
+    if (d < 30.0f) {
+      ++witnesses;
+      if (fear > 0.0f)
+        v.fear = std::min(1.0f, v.fear + fear * (1.0f - d / 30.0f));
+    }
   }
+  if (awe > 0.0f && population() > 0) {
+    belief = std::min(1.0f, belief + awe * static_cast<float>(witnesses) /
+                                        static_cast<float>(population()));
+  }
+}
+
+float Village::influenceRadius() const {
+  return tune::kVillageInfluenceBase + belief * tune::kVillageInfluenceScale;
+}
+
+int Village::activeWorshippers() const {
+  int n = 0;
+  for (const Villager& v : villagers)
+    if (v.job == Job::Worshipper && v.state == VState::Work && !v.inside) ++n;
+  return n;
 }
 
 glm::vec3 Village::storagePos() const {

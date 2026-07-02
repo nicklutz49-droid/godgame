@@ -44,6 +44,11 @@ class Village {
   glm::vec3 center{0.0f};
   float radius = 32.0f;          // flattened terrace / footprint radius
 
+  // Faith in the player, 0..1. Raised by witnessed divine acts, sustained by
+  // worship, decaying toward a floor. Scales worship mana output and the
+  // village's influence ring.
+  float belief = 0.25f;
+
   int wood = 0;
   int food = 0;
   // Cumulative counters for the headless soak asserts.
@@ -83,8 +88,15 @@ class Village {
   // Absorb a resource prop (log/food/tree) into the stores.
   void absorbProp(World& world, int propIdx);
 
-  // Witness bus: fear now; belief events ride this later.
-  void notifyDivineEvent(const glm::vec3& where, float magnitude);
+  // Witness bus for divine acts. Villagers within 30 m gain `fear`; belief
+  // rises by `awe` scaled by how much of the village saw it.
+  void notifyDivineEvent(const glm::vec3& where, float fear, float awe);
+
+  // How far the hand's power extends around this village (grows with belief).
+  float influenceRadius() const;
+
+  // Villagers currently dancing at the totem (for render glow / stats).
+  int activeWorshippers() const;
 
   glm::vec3 storagePos() const;
   glm::vec3 campfirePos() const;

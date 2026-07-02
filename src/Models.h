@@ -16,6 +16,8 @@ MeshData villagerArm();
 MeshData villagerLeg();
 
 // Buildings.
+MeshData temple();        // the god's seat: stepped platform + columns + roof
+MeshData templeCrystal(); // the mana beacon (drawn emissive, glow = mana)
 MeshData houseStage(int stage);  // 0 posts, 1 half walls, 2 walls, 3 roofed
 MeshData houseWindows();         // emissive quads, drawn at night
 MeshData totem();                // village center - the future worship site

@@ -7,12 +7,35 @@ screen is procedural placeholder art. There is no creature, by design.
 
 ![The village](docs/village.png)
 ![The village at night](docs/night.png)
+![The temple](docs/temple.png)
 ![The island](docs/island.png)
 
-## Current slice: a living village
+## Current slice: worship, belief & the temple
 
-The island now has one village and its people (see
-[docs/plan-villagers.md](docs/plan-villagers.md) for the full design):
+The god-game loop is closed (design docs: [villagers](docs/plan-villagers.md),
+[worship](docs/plan-worship.md)): worshippers dance at the village totem →
+**mana** fills the pool at your **temple** → you cast **miracles** → villagers
+who witness them **believe** → belief widens your **influence rings** and
+speeds worship.
+
+- **Worshippers** — drop a villager onto the village-center totem to devote
+  them. They dance in a circle around it (prayer motes rising, totem glowing),
+  generating mana scaled by belief — but dancing is hungry work, so every
+  worshipper is a worker you gave up who still eats from the pile.
+- **Belief** — grows when villagers witness divine acts (grabs a little,
+  throws more, gifts dropped on the storage pad, miracles most of all) and
+  decays toward a floor when you're absent. It scales worship output and the
+  village influence radius.
+- **The temple** — the god's seat, founded apart from the village on its own
+  terrace. Its floating gold beacon shows the mana pool at a glance and
+  projects the base influence ring.
+- **Influence** — the hand only highlights, grabs, and casts *inside* the
+  gold rings; outside it turns ghostly and can only pan the camera. Faith
+  literally extends your reach.
+- **The food miracle** (`M` at the cursor, 30 mana) — food rains from the sky;
+  villagers haul it to storage, witnesses believe harder.
+
+## Previous slice: a living village
 
 - **Villagers** — needs (hunger, energy), jobs (forester, farmer, fisherman,
   builder), and idle lives (wandering, chatting, sitting by the fire).
@@ -51,6 +74,7 @@ hard landings stun instead. The mortality seams are in place for later.
 | Mouse wheel | Zoom toward cursor |
 | `W A S D` / arrows | Move camera (Shift = faster) |
 | `Q` / `E` | Rotate camera |
+| `M` | Food miracle at the cursor (30 mana, inside influence) |
 | `T` | Advance time of day |
 | `R` | Generate a new island |
 | `F2` | Wireframe |
@@ -97,8 +121,8 @@ godgame --screenshot out.bmp [frames] [far|close|village|night]
 
 ## Roadmap
 
-- Worship, belief, and the influence ring
-- Miracles: gesture casting, water/fire/food
+- More miracles (rain/water, fire, wood) and gesture casting
+- A second village and inter-village dynamics
 - Villager mortality (throws, drowning, starvation — seams already in place)
 - Loaders for original Black & White data files (terrain, meshes, textures)
 - Sound
