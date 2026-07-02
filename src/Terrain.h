@@ -20,6 +20,10 @@ class Terrain {
 
   void generate(std::uint32_t seed);
 
+  // Gently terrace an area toward targetH (village founding). Must run before
+  // the render mesh is built; heightAt/normalAt/raycast agree automatically.
+  void flattenDisc(float cx, float cz, float radius, float targetH, float strength);
+
   float heightAt(float x, float z) const;   // bilinear; seabed outside bounds
   glm::vec3 normalAt(float x, float z) const;
 

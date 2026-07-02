@@ -45,6 +45,29 @@ void Terrain::generate(std::uint32_t seed) {
   }
 }
 
+void Terrain::flattenDisc(float cx, float cz, float radius, float targetH,
+                          float strength) {
+  if (heights_.empty()) return;
+  minH_ = 1e9f;
+  maxH_ = -1e9f;
+  for (int j = 0; j <= GRID; ++j) {
+    for (int i = 0; i <= GRID; ++i) {
+      float x = -SIZE * 0.5f + SIZE * static_cast<float>(i) / GRID;
+      float z = -SIZE * 0.5f + SIZE * static_cast<float>(j) / GRID;
+      float d = std::sqrt((x - cx) * (x - cx) + (z - cz) * (z - cz)) / radius;
+      if (d < 1.0f) {
+        // Full flattening over the inner half, smooth shoulder to the rim.
+        float w = 1.0f - smoothstep(0.5f, 1.0f, d);
+        float& h = heights_[j * (GRID + 1) + i];
+        h += (targetH - h) * w * strength;
+      }
+      float h = heights_[j * (GRID + 1) + i];
+      minH_ = std::min(minH_, h);
+      maxH_ = std::max(maxH_, h);
+    }
+  }
+}
+
 float Terrain::vertexHeight(int i, int j) const {
   i = std::clamp(i, 0, GRID);
   j = std::clamp(j, 0, GRID);

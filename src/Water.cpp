@@ -34,6 +34,7 @@ in vec3 vWorld;
 in vec3 vNormal;
 uniform vec3 uCamPos;
 uniform vec3 uSunDir;
+uniform vec3 uSunColor;
 uniform vec3 uFogColor;
 uniform float uFogDensity;
 out vec4 FragColor;
@@ -42,11 +43,12 @@ void main() {
   vec3 v = normalize(uCamPos - vWorld);
   float fresnel = pow(1.0 - max(dot(v, n), 0.0), 3.0);
 
-  vec3 deep = vec3(0.07, 0.29, 0.42);
+  // The deep-water color follows the sky so night oceans go dark.
+  vec3 deep = vec3(0.07, 0.29, 0.42) * clamp(uFogColor / vec3(0.74, 0.82, 0.88), 0.05, 1.2);
   vec3 col = mix(deep, uFogColor * 0.9, fresnel * 0.7);
 
-  float spec = pow(max(dot(reflect(-uSunDir, n), v), 0.0), 120.0) * 0.8;
-  col += vec3(spec);
+  float spec = pow(max(dot(reflect(-uSunDir, n), v), 0.0), 120.0) * 0.85;
+  col += uSunColor * spec;
 
   float dist = length(uCamPos - vWorld);
   float fog = 1.0 - exp(-uFogDensity * dist);
@@ -87,13 +89,14 @@ void Water::init() {
 }
 
 void Water::draw(const glm::mat4& viewProj, const glm::vec3& camPos,
-                 const glm::vec3& sunDir, const glm::vec3& fogColor,
-                 float fogDensity, float time) {
+                 const glm::vec3& sunDir, const glm::vec3& sunColor,
+                 const glm::vec3& fogColor, float fogDensity, float time) {
   shader_.use();
   shader_.set("uVP", viewProj);
   shader_.set("uTime", time);
   shader_.set("uCamPos", camPos);
   shader_.set("uSunDir", sunDir);
+  shader_.set("uSunColor", sunColor);
   shader_.set("uFogColor", fogColor);
   shader_.set("uFogDensity", fogDensity);
 

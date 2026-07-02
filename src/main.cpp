@@ -21,9 +21,12 @@
 #include "Camera.h"
 #include "Hand.h"
 #include "Mesh.h"
+#include "Models.h"
 #include "Shader.h"
 #include "Sky.h"
 #include "Terrain.h"
+#include "Tuning.h"
+#include "Villagers.h"
 #include "Water.h"
 #include "World.h"
 #include "gl.h"
@@ -57,6 +60,9 @@ in vec3 vWorld;
 in vec3 vNormal;
 in vec3 vColor;
 uniform vec3 uSunDir;
+uniform vec3 uSunColor;    // day/night sunlight tint (from DayCycle)
+uniform vec3 uAmbient;     // ambient light color (from DayCycle)
+uniform vec3 uTint;        // per-draw albedo multiplier (job colors, flashes)
 uniform vec3 uCamPos;
 uniform vec3 uFogColor;
 uniform float uFogDensity;
@@ -66,8 +72,8 @@ out vec4 FragColor;
 void main() {
   vec3 n = normalize(vNormal);
   float diff = max(dot(n, uSunDir), 0.0);
-  float ambient = 0.40 * (0.9 + 0.25 * n.y);
-  vec3 lit = vColor * (vec3(ambient) + diff * 0.95 * vec3(1.0, 0.96, 0.88));
+  vec3 albedo = vColor * uTint;
+  vec3 lit = albedo * (uAmbient * (0.9 + 0.25 * n.y) + diff * uSunColor);
 
   // Everything below the waterline picks up a submerged blue-green cast.
   if (vWorld.y < 0.0) {
@@ -75,7 +81,7 @@ void main() {
     lit = mix(lit, vec3(0.10, 0.28, 0.38), k);
   }
 
-  vec3 col = mix(lit, vColor, uEmissive);
+  vec3 col = mix(lit, albedo, uEmissive);
   float dist = length(uCamPos - vWorld);
   float fog = 1.0 - exp(-uFogDensity * dist);
   col = mix(col, uFogColor, fog);
@@ -228,6 +234,14 @@ struct App {
   Mesh shadowDisc;
   Mesh seabed;
 
+  // Village-slice meshes.
+  Mesh logMesh, foodMesh, stumpMesh;
+  Mesh villagerHeads[3], villagerTorso, villagerArm, villagerLeg;
+  Mesh houseStages[4], houseWindows, totemMesh, storagePadMesh;
+  Mesh woodPileMesh, foodPileMesh, campfireMesh, flameMesh;
+  Mesh fieldSlabMesh, cropMesh, smokeDisc;
+  Mesh bubbleHungerMesh, bubbleSleepMesh, bubbleFearMesh;
+
   std::uint32_t seed = 20260702u;
   bool quit = false;
   bool wireframe = false;
@@ -237,6 +251,11 @@ struct App {
   float wheelAccum = 0.0f;
   int mouseX = 0, mouseY = 0;
   float groundLift = 0.0f;
+
+  // Debug/tuning toggles.
+  int simSpeed = 1;        // F4: 1x / 4x / 16x
+  bool stateTint = false;  // F3: tint villagers by state instead of job
+  glm::vec3 prevHandPos{0.0f};
 
   glm::vec3 sunDir = glm::normalize(glm::vec3(0.45f, 0.62f, 0.30f));
   glm::vec3 fogColor{0.74f, 0.82f, 0.88f};
@@ -322,6 +341,32 @@ void App::initScene() {
   shadowDisc.upload(buildShadowDiscData());
   seabed.upload(buildSeabedData());
 
+  logMesh.upload(models::logProp());
+  foodMesh.upload(models::foodBundleProp());
+  stumpMesh.upload(models::stumpProp());
+  for (int v = 0; v < 3; ++v) villagerHeads[v].upload(models::villagerHead(v));
+  villagerTorso.upload(models::villagerTorso());
+  villagerArm.upload(models::villagerArm());
+  villagerLeg.upload(models::villagerLeg());
+  for (int s = 0; s < 4; ++s) houseStages[s].upload(models::houseStage(s));
+  houseWindows.upload(models::houseWindows());
+  totemMesh.upload(models::totem());
+  storagePadMesh.upload(models::storagePad());
+  woodPileMesh.upload(models::woodPile());
+  foodPileMesh.upload(models::foodPile());
+  campfireMesh.upload(models::campfire());
+  flameMesh.upload(models::campfireFlame());
+  fieldSlabMesh.upload(models::fieldSlab(8.0f, 5.0f));
+  cropMesh.upload(models::cropCone());
+  {
+    MeshData md;
+    md.addDisc(glm::mat4(1.0f), 1.0f, 16, glm::vec3(0.80f, 0.80f, 0.80f));
+    smokeDisc.upload(md);
+  }
+  bubbleHungerMesh.upload(models::bubbleHunger());
+  bubbleSleepMesh.upload(models::bubbleSleep());
+  bubbleFearMesh.upload(models::bubbleFear());
+
   rebuildWorld(seed);
 }
 
@@ -330,10 +375,12 @@ void App::rebuildWorld(std::uint32_t newSeed) {
   world.generate(seed);
   terrainMesh.upload(world.terrain.buildMeshData());
   hand.mode = Hand::Mode::Free;
-  hand.heldProp = -1;
-  SDL_Log("World seed %u | land %.0f%% | height %.1f..%.1f | %zu props", seed,
-          world.terrain.landFraction() * 100.0f, world.terrain.minHeight(),
-          world.terrain.maxHeight(), world.props.size());
+  hand.held.clear();
+  hand.hover.clear();
+  SDL_Log("World seed %u | land %.0f%% | height %.1f..%.1f | %zu props | village (%.0f, %.0f), pop %d",
+          seed, world.terrain.landFraction() * 100.0f, world.terrain.minHeight(),
+          world.terrain.maxHeight(), world.props.size(), world.village.center.x,
+          world.village.center.z, world.village.population());
 }
 
 void App::handleEvent(const SDL_Event& e) {
@@ -364,7 +411,11 @@ void App::handleEvent(const SDL_Event& e) {
       break;
     case SDL_MOUSEBUTTONUP:
       if (e.button.button == SDL_BUTTON_LEFT) {
-        hand.release(world);
+        if (hand.mode == Hand::Mode::Carry) {
+          hand.release(world);
+          SDL_Log("release speed %.1f (%s)", hand.lastReleaseSpeed,
+                  hand.lastReleaseSpeed < tune::kPlaceSpeed ? "place" : "throw");
+        }
         panning = false;
       } else if (e.button.button == SDL_BUTTON_RIGHT || e.button.button == SDL_BUTTON_MIDDLE) {
         orbiting = false;
@@ -381,6 +432,32 @@ void App::handleEvent(const SDL_Event& e) {
           break;
         case SDLK_F2:
           wireframe = !wireframe;
+          break;
+        case SDLK_F3:
+          stateTint = !stateTint;
+          break;
+        case SDLK_F4:
+          simSpeed = simSpeed == 1 ? 4 : (simSpeed == 4 ? 16 : 1);
+          SDL_Log("sim speed x%d", simSpeed);
+          break;
+        case SDLK_t:
+          world.dayCycle.t += 0.02f;
+          world.dayCycle.t -= std::floor(world.dayCycle.t);
+          break;
+        case SDLK_k:
+          if (hand.hasGround && world.village.founded) {
+            Villager v;
+            v.pos = hand.groundPoint;
+            v.pos.y = world.terrain.heightAt(v.pos.x, v.pos.z);
+            v.rng = seed ^ (static_cast<std::uint32_t>(world.village.villagers.size()) *
+                            2654435761u);
+            v.variant = static_cast<int>(world.village.villagers.size() % 3);
+            world.village.villagers.push_back(v);
+          }
+          break;
+        case SDLK_l:
+          world.village.wood += 10;
+          world.village.food += 10;
           break;
         case SDLK_r:
           rebuildWorld(seed * 1664525u + 1013904223u);
@@ -456,13 +533,55 @@ void App::update(float dt) {
   glm::vec3 rayDir = cam.rayDir(static_cast<float>(mouseX), static_cast<float>(mouseY), winW, winH);
   hand.update(dt, rayOrigin, rayDir, world);
 
-  world.update(dt);
+  // Tell the sim where the hand is (villagers watch it).
+  world.handPos = hand.pos;
+  world.handSpeed = dt > 0.0001f ? glm::distance(hand.pos, prevHandPos) / dt : 0.0f;
+  prevHandPos = hand.pos;
+
+  // F4 time-lapse scales the sim only; camera and hand stay real-time.
+  for (int step = 0; step < simSpeed; ++step) world.update(dt);
 }
+
+namespace {
+
+glm::vec3 jobTint(Job j) {
+  switch (j) {
+    case Job::Forester: return {0.45f, 0.80f, 0.38f};
+    case Job::Farmer: return {0.95f, 0.80f, 0.42f};
+    case Job::Fisherman: return {0.45f, 0.65f, 0.95f};
+    case Job::Builder: return {0.90f, 0.50f, 0.35f};
+    default: return {0.85f, 0.82f, 0.75f};  // undyed
+  }
+}
+
+glm::vec3 stateTintColor(VState s) {
+  if (s == VState::Held || s == VState::Airborne || s == VState::Stunned ||
+      s == VState::Swim)
+    return {1.0f, 0.25f, 0.25f};
+  if (s == VState::Panic || s == VState::Cower) return {1.0f, 0.6f, 0.2f};
+  if (s == VState::Work || s == VState::Haul) return {0.3f, 1.0f, 0.4f};
+  if (s == VState::GoTo || s == VState::Wander || s == VState::GoEat ||
+      s == VState::GoHome)
+    return {0.35f, 0.55f, 1.0f};
+  if (s == VState::Sleep || s == VState::Eat) return {0.8f, 0.5f, 1.0f};
+  return {0.7f, 0.7f, 0.7f};
+}
+
+}  // namespace
 
 void App::render(float time) {
   int dw = winW, dh = winH;
   SDL_GL_GetDrawableSize(window, &dw, &dh);
   gl.Viewport(0, 0, dw, dh);
+
+  // Lighting follows the day cycle; noon matches the original fixed look.
+  const DayCycle& day = world.dayCycle;
+  sunDir = day.sunDir();
+  fogColor = day.fogColor();
+  glm::vec3 sunColor = day.sunColor();
+  glm::vec3 ambient = day.ambient();
+  float night = 1.0f - day.daylight();
+
   gl.ClearColor(fogColor.r, fogColor.g, fogColor.b, 1.0f);
   gl.Clear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -472,11 +591,15 @@ void App::render(float time) {
   glm::mat4 vp = proj * view;
   glm::vec3 camPos = cam.position();
 
-  sky.draw(glm::inverse(vp), camPos, sunDir, fogColor);
+  sky.draw(glm::inverse(vp), camPos, sunDir, fogColor, day.zenithColor(), sunColor,
+           night);
 
   lit.use();
   lit.set("uVP", vp);
   lit.set("uSunDir", sunDir);
+  lit.set("uSunColor", sunColor);
+  lit.set("uAmbient", ambient);
+  lit.set("uTint", glm::vec3(1.0f));
   lit.set("uCamPos", camPos);
   lit.set("uFogColor", fogColor);
   lit.set("uFogDensity", fogDensity);
@@ -491,24 +614,117 @@ void App::render(float time) {
 
   for (std::size_t i = 0; i < world.props.size(); ++i) {
     const Prop& p = world.props[i];
+    if (!p.alive) continue;
     glm::mat4 model = glm::translate(glm::mat4(1.0f), p.pos) * glm::mat4_cast(p.rot) *
                       glm::scale(glm::mat4(1.0f), glm::vec3(p.scale));
     lit.set("uModel", model);
-    lit.set("uEmissive", static_cast<int>(i) == hand.hoverProp ? 0.22f : 0.0f);
-    const Mesh& mesh = p.type == PropType::Tree ? treeMeshes[p.variant] : rockMeshes[p.variant];
-    mesh.draw();
+    lit.set("uEmissive",
+            hand.hover.isProp() && hand.hover.index == static_cast<int>(i) ? 0.22f
+                                                                           : 0.0f);
+    const Mesh* mesh = nullptr;
+    switch (p.type) {
+      case PropType::Tree: mesh = &treeMeshes[p.variant]; break;
+      case PropType::Rock: mesh = &rockMeshes[p.variant]; break;
+      case PropType::Log: mesh = &logMesh; break;
+      case PropType::Food: mesh = &foodMesh; break;
+      case PropType::Stump: mesh = &stumpMesh; break;
+    }
+    if (mesh) mesh->draw();
+  }
+  lit.set("uEmissive", 0.0f);
+
+  // Village buildings.
+  const Village& vil = world.village;
+  for (std::size_t b = 0; b < vil.buildings.size(); ++b) {
+    const Building& bd = vil.buildings[b];
+    if (bd.stage < 0) continue;  // reserved plot, invisible
+    glm::mat4 model = glm::translate(glm::mat4(1.0f), bd.pos) *
+                      glm::rotate(glm::mat4(1.0f), bd.yaw, glm::vec3(0, 1, 0));
+    lit.set("uModel", model);
+    switch (bd.type) {
+      case BuildingType::Center: totemMesh.draw(); break;
+      case BuildingType::Storage: storagePadMesh.draw(); break;
+      case BuildingType::Campfire: campfireMesh.draw(); break;
+      case BuildingType::House: houseStages[std::clamp(bd.stage, 0, 3)].draw(); break;
+    }
+  }
+  if (vil.founded) {
+    // Stock piles scale with the stores - a glanceable economy gauge.
+    glm::vec3 sp = vil.storagePos();
+    if (vil.wood > 0) {
+      float s = std::clamp(0.45f + static_cast<float>(vil.wood) * 0.025f, 0.45f, 1.5f);
+      lit.set("uModel", glm::translate(glm::mat4(1.0f), sp + glm::vec3(1.7f, 0.15f, 0.6f)) *
+                            glm::scale(glm::mat4(1.0f), glm::vec3(s)));
+      woodPileMesh.draw();
+    }
+    if (vil.food > 0) {
+      float s = std::clamp(0.45f + static_cast<float>(vil.food) * 0.02f, 0.45f, 1.4f);
+      lit.set("uModel", glm::translate(glm::mat4(1.0f), sp + glm::vec3(-1.6f, 0.15f, -0.7f)) *
+                            glm::scale(glm::mat4(1.0f), glm::vec3(s)));
+      foodPileMesh.draw();
+    }
+    // The field and its crops.
+    float fh = world.terrain.heightAt(vil.fieldCenter.x, vil.fieldCenter.y);
+    lit.set("uModel", glm::translate(glm::mat4(1.0f),
+                                     glm::vec3(vil.fieldCenter.x, fh, vil.fieldCenter.y)));
+    fieldSlabMesh.draw();
+    for (const FarmCell& c : vil.farmCells) {
+      if (c.growth < 0.08f) continue;
+      float ch = world.terrain.heightAt(c.pos.x, c.pos.y);
+      glm::mat4 m = glm::translate(glm::mat4(1.0f), glm::vec3(c.pos.x, ch + 0.15f, c.pos.y)) *
+                    glm::scale(glm::mat4(1.0f),
+                               glm::vec3(0.55f + 0.45f * c.growth, c.growth, 0.55f + 0.45f * c.growth));
+      lit.set("uModel", m);
+      cropMesh.draw();
+    }
+  }
+
+  // Villagers: six posed parts each, two at distance.
+  for (std::size_t i = 0; i < vil.villagers.size(); ++i) {
+    const Villager& v = vil.villagers[i];
+    if (v.inside) continue;
+    VillagerPose pose = computeVillagerPose(v, time);
+    glm::mat4 root = glm::translate(glm::mat4(1.0f), v.pos) * pose.root;
+    bool farAway = glm::distance(camPos, v.pos) > 180.0f;
+    bool hovered = hand.hover.isVillager() && hand.hover.index == static_cast<int>(i);
+    glm::vec3 tint = stateTint ? stateTintColor(v.state) : jobTint(v.job);
+    if (v.assignedFlash > 0.0f)
+      tint = glm::mix(tint, glm::vec3(1.4f), 0.5f * std::sin(v.assignedFlash * 9.0f) + 0.5f);
+    float emissive = hovered ? 0.25f : (v.assignedFlash > 0.0f ? 0.2f : 0.0f);
+    lit.set("uEmissive", emissive);
+
+    lit.set("uTint", tint);
+    lit.set("uModel", root * pose.torso);
+    villagerTorso.draw();
+    if (!farAway) {
+      lit.set("uModel", root * pose.armL);
+      villagerArm.draw();
+      lit.set("uModel", root * pose.armR);
+      villagerArm.draw();
+      lit.set("uTint", glm::vec3(1.0f));
+      lit.set("uModel", root * pose.legL);
+      villagerLeg.draw();
+      lit.set("uModel", root * pose.legR);
+      villagerLeg.draw();
+    } else {
+      lit.set("uTint", glm::vec3(1.0f));
+    }
+    lit.set("uModel", root * pose.head);
+    villagerHeads[v.variant % 3].draw();
+    lit.set("uTint", glm::vec3(1.0f));
   }
   lit.set("uEmissive", 0.0f);
 
   if (wireframe) gl.PolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
-  // Blob shadows under airborne/carried props (cheap read of where things land).
+  // ---- translucent pass: shadows, bubbles, fire, smoke, window glow ----
   gl.Enable(GL_BLEND);
   gl.BlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
   gl.DepthMask(GL_FALSE);
   lit.set("uEmissive", 1.0f);
   lit.set("uAlpha", 0.35f);
   for (const Prop& p : world.props) {
+    if (!p.alive) continue;
     if (!p.held && p.asleep) continue;
     float ground = world.terrain.heightAt(p.pos.x, p.pos.z);
     if (ground < Terrain::WATER_LEVEL - 0.2f) continue;
@@ -519,10 +735,80 @@ void App::render(float time) {
     lit.set("uModel", model);
     shadowDisc.draw();
   }
+  for (const Villager& v : vil.villagers) {
+    if (!(v.held || v.state == VState::Airborne)) continue;
+    float ground = world.terrain.heightAt(v.pos.x, v.pos.z);
+    if (ground < Terrain::WATER_LEVEL - 0.2f) continue;
+    if (v.pos.y - ground < 0.2f) continue;
+    glm::mat4 model = glm::translate(glm::mat4(1.0f), glm::vec3(v.pos.x, ground + 0.08f, v.pos.z)) *
+                      orientToNormal(world.terrain.normalAt(v.pos.x, v.pos.z)) *
+                      glm::scale(glm::mat4(1.0f), glm::vec3(0.9f * v.scale));
+    lit.set("uModel", model);
+    shadowDisc.draw();
+  }
+
+  // Thought bubbles: needs and fear, yaw-billboarded.
+  for (std::size_t i = 0; i < vil.villagers.size(); ++i) {
+    const Villager& v = vil.villagers[i];
+    if (v.inside) continue;
+    const Mesh* bubble = nullptr;
+    if (v.state == VState::Panic || v.state == VState::Cower || v.held ||
+        v.state == VState::Airborne)
+      bubble = &bubbleFearMesh;
+    else if (v.hunger > 0.72f)
+      bubble = &bubbleHungerMesh;
+    else if (v.energy < 0.22f)
+      bubble = &bubbleSleepMesh;
+    if (!bubble) continue;
+    float bob = 0.08f * std::sin(time * 2.2f + static_cast<float>(i));
+    glm::mat4 model = glm::translate(glm::mat4(1.0f),
+                                     v.pos + glm::vec3(0, 2.35f * v.scale + bob, 0)) *
+                      glm::rotate(glm::mat4(1.0f), cam.yaw, glm::vec3(0, 1, 0)) *
+                      glm::scale(glm::mat4(1.0f), glm::vec3(0.6f));
+    lit.set("uModel", model);
+    lit.set("uAlpha", 0.9f);
+    bubble->draw();
+  }
+
+  if (vil.founded) {
+    glm::vec3 fire = vil.campfirePos();
+    // Flame after dusk, flickering.
+    if (night > 0.2f) {
+      float flick = 0.85f + 0.18f * std::sin(time * 23.7f) * std::sin(time * 13.1f + 1.7f);
+      lit.set("uModel", glm::translate(glm::mat4(1.0f), fire) *
+                            glm::scale(glm::mat4(1.0f), glm::vec3(flick, flick * 1.1f, flick)));
+      lit.set("uAlpha", 0.95f);
+      flameMesh.draw();
+    }
+    // Smoke column - the "your village is alive over there" beacon.
+    for (int k = 0; k < 4; ++k) {
+      float yo = std::fmod(time * 0.9f + static_cast<float>(k) * 1.25f, 5.0f);
+      float alpha = 0.28f * (1.0f - yo / 5.0f);
+      if (alpha < 0.02f) continue;
+      glm::vec3 p = fire + glm::vec3(0.4f * std::sin(time * 0.7f + yo), 1.7f + yo,
+                                     0.3f * std::cos(time * 0.6f + yo));
+      lit.set("uModel", glm::translate(glm::mat4(1.0f), p) *
+                            glm::scale(glm::mat4(1.0f), glm::vec3(0.5f + yo * 0.32f)));
+      lit.set("uAlpha", alpha);
+      smokeDisc.draw();
+    }
+    // Window glow after dark.
+    if (night > 0.35f) {
+      lit.set("uAlpha", std::min(1.0f, night * 1.3f));
+      for (const Building& bd : vil.buildings) {
+        if (bd.type != BuildingType::House || bd.stage != 3) continue;
+        lit.set("uModel", glm::translate(glm::mat4(1.0f), bd.pos) *
+                              glm::rotate(glm::mat4(1.0f), bd.yaw, glm::vec3(0, 1, 0)));
+        houseWindows.draw();
+      }
+    }
+  }
+  lit.set("uAlpha", 1.0f);
+  lit.set("uEmissive", 0.0f);
   gl.DepthMask(GL_TRUE);
   gl.Disable(GL_BLEND);
 
-  water.draw(vp, camPos, sunDir, fogColor, fogDensity, time);
+  water.draw(vp, camPos, sunDir, sunColor, fogColor, fogDensity, time);
 
   // The divine hand, drawn last.
   gl.Enable(GL_BLEND);
@@ -549,12 +835,15 @@ void App::render(float time) {
 
 int App::runInteractive() {
   SDL_Log("Controls:");
-  SDL_Log("  Left-drag ground   pan (grab the land)");
-  SDL_Log("  Left-drag object   pick up; release while moving to throw");
-  SDL_Log("  Right/middle-drag  rotate & tilt camera");
-  SDL_Log("  Mouse wheel        zoom toward cursor");
-  SDL_Log("  WASD/arrows Q E    move / rotate, Shift = faster");
-  SDL_Log("  R                  new island   F2 wireframe   Esc quit");
+  SDL_Log("  Left-drag ground     pan (grab the land)");
+  SDL_Log("  Left-drag thing      pick up rock/tree/log/VILLAGER");
+  SDL_Log("  ...release slowly    set down (on trees/field/water/site = assign job)");
+  SDL_Log("  ...release moving    throw");
+  SDL_Log("  Right/middle-drag    rotate & tilt camera");
+  SDL_Log("  Mouse wheel          zoom toward cursor");
+  SDL_Log("  WASD/arrows Q E      move / rotate, Shift = faster");
+  SDL_Log("  R new island   T advance time   F2 wireframe   Esc quit");
+  SDL_Log("  Debug: F3 state tint   F4 sim speed   K spawn villager   L +10 res");
 
   Uint64 prev = SDL_GetPerformanceCounter();
   const double freq = static_cast<double>(SDL_GetPerformanceFrequency());
@@ -578,9 +867,11 @@ int App::runInteractive() {
     fpsTimer += dt;
     ++fpsFrames;
     if (fpsTimer >= 0.5f) {
-      char title[64];
-      std::snprintf(title, sizeof(title), "godgame - %.0f fps",
-                    fpsFrames / fpsTimer);
+      char title[128];
+      std::snprintf(title, sizeof(title),
+                    "godgame - %.0f fps | pop %d  wood %d  food %d | day %.2f",
+                    fpsFrames / fpsTimer, world.village.population(),
+                    world.village.wood, world.village.food, world.dayCycle.t);
       SDL_SetWindowTitle(window, title);
       fpsTimer = 0.0f;
       fpsFrames = 0;
@@ -602,6 +893,11 @@ int App::runScreenshot(const std::string& path, int frames, const std::string& v
     cam.focus = target;
     cam.distance = 45.0f;
     cam.yaw = 2.2f;
+  } else if (view == "village" || view == "night") {
+    cam.focus = world.village.center;
+    cam.distance = 85.0f;
+    cam.yaw = 2.3f;
+    if (view == "night") world.dayCycle.t = 0.93f;
   } else {
     cam.focus = glm::vec3(0.0f, 8.0f, 0.0f);
     cam.distance = 300.0f;
@@ -636,54 +932,278 @@ void App::shutdown() {
   SDL_Quit();
 }
 
-// ------------------------------------------------------------ headless test
+// ------------------------------------------------------------ headless tests
+
+std::uint64_t fnvMix(std::uint64_t h, const void* data, std::size_t len) {
+  const unsigned char* p = static_cast<const unsigned char*>(data);
+  for (std::size_t i = 0; i < len; ++i) {
+    h ^= p[i];
+    h *= 1099511628211ull;
+  }
+  return h;
+}
+
+std::uint64_t worldChecksum(const World& w) {
+  std::uint64_t h = 1469598103934665603ull;
+  auto addF = [&](float f) {
+    auto q = static_cast<std::int64_t>(std::llround(static_cast<double>(f) * 1000.0));
+    h = fnvMix(h, &q, sizeof q);
+  };
+  for (const Villager& v : w.village.villagers) {
+    addF(v.pos.x);
+    addF(v.pos.y);
+    addF(v.pos.z);
+    addF(v.hunger);
+    int s = static_cast<int>(v.state), j = static_cast<int>(v.job);
+    h = fnvMix(h, &s, sizeof s);
+    h = fnvMix(h, &j, sizeof j);
+  }
+  int counters[3] = {w.village.wood, w.village.food, w.village.population()};
+  h = fnvMix(h, counters, sizeof counters);
+  addF(w.dayCycle.t);
+  return h;
+}
 
 int runHeadless(std::uint32_t seed, int steps) {
+  const float dt = 1.0f / 60.0f;
+  bool allOk = true;
+  auto check = [&](bool ok, const char* what) {
+    std::printf("  [%s] %s\n", ok ? "ok" : "FAIL", what);
+    allOk &= ok;
+  };
+
   World world;
   world.generate(seed);
+  Village& vil = world.village;
 
   std::printf("seed          %u\n", seed);
   std::printf("land fraction %.3f\n", world.terrain.landFraction());
   std::printf("height range  %.2f .. %.2f\n", world.terrain.minHeight(),
               world.terrain.maxHeight());
   std::size_t trees = 0, rocks = 0;
-  for (const Prop& p : world.props)
-    (p.type == PropType::Tree ? trees : rocks) += 1;
+  for (const Prop& p : world.props) {
+    if (p.type == PropType::Tree) ++trees;
+    if (p.type == PropType::Rock) ++rocks;
+  }
   std::printf("props         %zu trees, %zu rocks\n", trees, rocks);
+  std::printf("village       (%.0f, %.0f) h=%.1f | pop %d | %zu buildings | %zu fishing spots\n",
+              vil.center.x, vil.center.z, vil.center.y, vil.population(),
+              vil.buildings.size(), vil.fishingSpots.size());
 
-  // Self-test: hurl the first rock across the island and make sure it flies,
-  // lands, and goes to sleep with sane numbers.
+  std::printf("[1] world & village layout\n");
+  check(world.terrain.landFraction() > 0.15f && world.terrain.landFraction() < 0.8f,
+        "island land fraction sane");
+  check(trees > 50 && rocks > 30, "props scattered");
+  check(vil.founded, "village founded");
+  check(world.terrain.heightAt(vil.center.x, vil.center.z) > 1.5f, "village on land");
+  check(world.terrain.normalAt(vil.center.x, vil.center.z).y > 0.9f, "terrace is flat");
+  check(!vil.fishingSpots.empty(), "found a fishing spot");
+  check(vil.population() == tune::kStartPopulation, "starting population spawned");
+
+  // [2] The original physics regression: hurl a rock, it flies, lands, sleeps.
+  std::printf("[2] thrown rock\n");
   int rockIndex = -1;
-  for (std::size_t i = 0; i < world.props.size(); ++i) {
+  for (std::size_t i = 0; i < world.props.size(); ++i)
     if (world.props[i].type == PropType::Rock) {
       rockIndex = static_cast<int>(i);
       break;
     }
+  check(rockIndex >= 0, "a rock exists");
+  if (rockIndex >= 0) {
+    Prop& rock = world.props[rockIndex];
+    rock.pos = glm::vec3(0.0f, world.terrain.heightAt(0.0f, 0.0f) + 30.0f, 0.0f);
+    world.throwProp(rockIndex, glm::vec3(18.0f, 6.0f, 11.0f));
+    glm::vec3 start = rock.pos;
+    for (int i = 0; i < steps; ++i) world.update(dt);
+    bool finite = std::isfinite(rock.pos.x) && std::isfinite(rock.pos.y) &&
+                  std::isfinite(rock.pos.z);
+    float travelled = glm::distance(glm::vec2(start.x, start.z),
+                                    glm::vec2(rock.pos.x, rock.pos.z));
+    std::printf("      travelled %.1f, final (%.1f, %.1f, %.1f), asleep=%d\n", travelled,
+                rock.pos.x, rock.pos.y, rock.pos.z, rock.asleep ? 1 : 0);
+    check(finite && travelled > 5.0f && rock.asleep, "flies, lands, sleeps");
   }
-  if (rockIndex < 0) {
-    std::printf("FAIL: no rock spawned\n");
-    return 1;
+
+  // [3] Hand script: throw a villager hard - flail, stun, panic, recover.
+  //     Villagers are invulnerable this slice; this test flips when mortality lands.
+  std::printf("[3] thrown villager\n");
+  {
+    Villager& v = vil.villagers[0];
+    v.pos = vil.center + glm::vec3(0.0f, 14.0f, 0.0f);
+    villagerReleased(world, 0, glm::vec3(24.0f, 6.0f, 13.0f), false);
+    bool sawAirborne = false, sawStunned = false, sawRecovered = false;
+    for (int i = 0; i < 3000 && !sawRecovered; ++i) {
+      world.update(dt);
+      VState s = vil.villagers[0].state;
+      sawAirborne |= s == VState::Airborne;
+      sawStunned |= s == VState::Stunned;
+      if (sawStunned && (s == VState::Idle || s == VState::Wander || s == VState::Panic))
+        sawRecovered = true;
+    }
+    const Villager& v0 = vil.villagers[0];
+    bool finite = std::isfinite(v0.pos.x) && std::isfinite(v0.pos.y) &&
+                  std::isfinite(v0.pos.z);
+    check(sawAirborne, "went airborne");
+    check(sawStunned, "hard landing stunned");
+    check(sawRecovered, "got up and recovered");
+    check(finite, "position stayed finite");
+    // Maximum violence, still alive (the invulnerability tripwire).
+    vil.villagers[0].pos = vil.center + glm::vec3(0.0f, 60.0f, 0.0f);
+    villagerReleased(world, 0, glm::vec3(65.0f, 0.0f, 0.0f), false);
+    for (int i = 0; i < 3000; ++i) world.update(dt);
+    const Villager& v1 = vil.villagers[0];
+    check(std::isfinite(v1.pos.x) && std::isfinite(v1.pos.y), "survived 65 m/s (invulnerable)");
   }
-  Prop& rock = world.props[rockIndex];
-  rock.pos = glm::vec3(0.0f, world.terrain.heightAt(0.0f, 0.0f) + 30.0f, 0.0f);
-  world.throwProp(rockIndex, glm::vec3(18.0f, 6.0f, 11.0f));
-  glm::vec3 start = rock.pos;
 
-  const float dt = 1.0f / 60.0f;
-  for (int i = 0; i < steps; ++i) world.update(dt);
+  // [4] Drop-to-assign resolution rules.
+  std::printf("[4] drop-to-assign\n");
+  {
+    glm::vec3 fieldP(vil.fieldCenter.x, 0.0f, vil.fieldCenter.y);
+    fieldP.y = world.terrain.heightAt(fieldP.x, fieldP.z);
+    check(vil.resolveJobAtPoint(world, fieldP) == Job::Farmer, "field -> farmer");
 
-  bool finite = std::isfinite(rock.pos.x) && std::isfinite(rock.pos.y) &&
-                std::isfinite(rock.pos.z);
-  float travelled = glm::distance(glm::vec2(start.x, start.z),
-                                  glm::vec2(rock.pos.x, rock.pos.z));
-  std::printf("thrown rock   travelled %.1f, final (%.1f, %.1f, %.1f), asleep=%d\n",
-              travelled, rock.pos.x, rock.pos.y, rock.pos.z, rock.asleep ? 1 : 0);
+    int siteIdx = -1;
+    for (std::size_t b = 0; b < vil.buildings.size(); ++b)
+      if (vil.buildings[b].type == BuildingType::House && vil.buildings[b].stage == 0)
+        siteIdx = static_cast<int>(b);
+    check(siteIdx >= 0, "a construction site is open at start");
+    if (siteIdx >= 0)
+      check(vil.resolveJobAtPoint(world, vil.buildings[siteIdx].pos) == Job::Builder,
+            "site -> builder");
 
-  bool ok = finite && travelled > 5.0f && rock.asleep &&
-            world.terrain.landFraction() > 0.15f && world.terrain.landFraction() < 0.8f &&
-            trees > 50 && rocks > 30;
-  std::printf(ok ? "OK\n" : "FAIL\n");
-  return ok ? 0 : 1;
+    int treeIdx = -1;
+    for (std::size_t i = 0; i < world.props.size(); ++i)
+      if (world.props[i].alive && world.props[i].type == PropType::Tree) {
+        treeIdx = static_cast<int>(i);
+        break;
+      }
+    if (treeIdx >= 0)
+      check(vil.resolveJobAtPoint(world, world.props[treeIdx].pos) == Job::Forester,
+            "tree -> forester");
+
+    glm::vec3 waterP = vil.fishingSpots.empty()
+                           ? glm::vec3(0.0f)
+                           : vil.fishingSpots[0];
+    // Push past the spot to actual water.
+    glm::vec3 out = glm::normalize(glm::vec3(waterP.x - vil.center.x, 0.0f,
+                                             waterP.z - vil.center.z));
+    for (float d = 0.0f; d < 40.0f; d += 2.0f) {
+      glm::vec3 p = waterP + out * d;
+      if (world.terrain.heightAt(p.x, p.z) < Terrain::WATER_LEVEL) {
+        waterP = p;
+        break;
+      }
+    }
+    check(vil.resolveJobAtPoint(world, waterP) == Job::Fisherman, "water -> fisherman");
+
+    // Full gentle-placement path: set a villager down on the field.
+    Villager& v = vil.villagers[1];
+    Job before = v.job;
+    v.pos = fieldP + glm::vec3(0.5f, 1.0f, 0.5f);
+    villagerReleased(world, 1, glm::vec3(0.3f, 0.0f, 0.2f), true);
+    for (int i = 0; i < 240; ++i) world.update(dt);
+    check(vil.villagers[1].job == Job::Farmer, "gently placed on field -> becomes farmer");
+    (void)before;
+  }
+
+  // [5] Resources dropped on the storage pad are absorbed. (Builders may be
+  // withdrawing concurrently, so compare the monotonic produced-counter.)
+  std::printf("[5] storage absorption\n");
+  {
+    int producedBefore = vil.woodProduced;
+    Prop log;
+    log.type = PropType::Log;
+    log.scale = 1.0f;
+    log.radius = 0.5f;
+    log.resource = 1.0f;
+    log.pos = vil.storagePos() + glm::vec3(0.0f, 3.0f, 0.0f);
+    log.asleep = false;
+    world.spawnProp(log);
+    for (int i = 0; i < 300; ++i) world.update(dt);
+    check(vil.woodProduced == producedBefore + 1, "log dropped on storage -> +1 wood");
+  }
+
+  // [6] Three-day economy & schedule soak. Days are shrunk to 240 s - short
+  // enough to simulate fast, long enough that walking/chopping (real-time
+  // actions) still fit inside a work day.
+  std::printf("[6] three-day soak\n");
+  {
+    World w2;
+    w2.generate(seed);
+    w2.dayCycle.secondsPerDay = 240.0f;
+    Village& v2 = w2.village;
+    int steps3d = static_cast<int>(3.0f * 240.0f / dt);
+    float midnightSleep = -1.0f, noonActive = -1.0f;
+    bool finite = true, inBounds = true;
+    float prevT = w2.dayCycle.t;
+    for (int i = 0; i < steps3d; ++i) {
+      w2.update(dt);
+      float t = w2.dayCycle.t;
+      if (prevT > t) {  // wrapped midnight: census
+        int asleep = 0;
+        for (const Villager& v : v2.villagers)
+          if (v.state == VState::Sleep || v.inside) ++asleep;
+        midnightSleep = static_cast<float>(asleep) /
+                        static_cast<float>(v2.villagers.size());
+      }
+      if (prevT < 0.5f && t >= 0.5f) {  // noon census
+        int active = 0;
+        for (const Villager& v : v2.villagers)
+          if (!v.inside && v.state != VState::Sleep) ++active;
+        noonActive = static_cast<float>(active) /
+                     static_cast<float>(v2.villagers.size());
+      }
+      prevT = t;
+      if ((i & 255) == 0) {
+        for (const Villager& v : v2.villagers) {
+          finite &= std::isfinite(v.pos.x) && std::isfinite(v.pos.y) &&
+                    std::isfinite(v.pos.z);
+          inBounds &= std::abs(v.pos.x) < Terrain::SIZE * 0.55f &&
+                      std::abs(v.pos.z) < Terrain::SIZE * 0.55f;
+        }
+      }
+    }
+    int stage3Houses = 0;
+    for (const Building& b : v2.buildings)
+      if (b.type == BuildingType::House && b.stage == 3) ++stage3Houses;
+    std::printf(
+        "      wood %d (produced %d) | food %d (produced %d, eaten %d) | pop %d | "
+        "houses %d | stuck %d | midnight asleep %.0f%% | noon active %.0f%%\n",
+        v2.wood, v2.woodProduced, v2.food, v2.foodProduced, v2.mealsEaten,
+        v2.population(), stage3Houses, v2.stuckEvents, midnightSleep * 100.0f,
+        noonActive * 100.0f);
+    check(finite, "all positions finite");
+    check(inBounds, "everyone stayed on the island");
+    check(v2.woodProduced > 0, "wood was produced");
+    check(v2.foodProduced > 0, "food was produced");
+    check(v2.mealsEaten > 0, "meals were eaten");
+    check(v2.food >= 0 && v2.wood >= 0, "stores never went negative");
+    check(v2.population() > tune::kStartPopulation, "population grew");
+    check(stage3Houses > 3, "the starter construction site was completed");
+    check(v2.stuckEvents < 60, "stuck watchdog under control");
+    check(midnightSleep >= 0.7f, "village sleeps at midnight");
+    check(noonActive >= 0.6f, "village is active at noon");
+  }
+
+  // [7] Determinism: same seed, same steps, identical checksums.
+  std::printf("[7] determinism\n");
+  {
+    World a, b;
+    a.generate(seed);
+    b.generate(seed);
+    a.dayCycle.secondsPerDay = 60.0f;
+    b.dayCycle.secondsPerDay = 60.0f;
+    for (int i = 0; i < 2000; ++i) {
+      a.update(dt);
+      b.update(dt);
+    }
+    std::uint64_t ha = worldChecksum(a), hb = worldChecksum(b);
+    std::printf("      checksum %016llx\n", static_cast<unsigned long long>(ha));
+    check(ha == hb, "two runs match bit-for-bit");
+  }
+
+  std::printf(allOk ? "OK\n" : "FAIL\n");
+  return allOk ? 0 : 1;
 }
 
 }  // namespace

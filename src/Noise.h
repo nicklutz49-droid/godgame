@@ -8,6 +8,20 @@
 // whatever seed the player shares.
 namespace noise {
 
+// Tiny deterministic RNG - the only random source the simulation may use.
+struct XorShift {
+  std::uint32_t state;
+  explicit XorShift(std::uint32_t seed) : state(seed ? seed : 0xBADC0FFEu) {}
+  std::uint32_t next() {
+    state ^= state << 13;
+    state ^= state >> 17;
+    state ^= state << 5;
+    return state;
+  }
+  float uniform() { return static_cast<float>(next()) / 4294967295.0f; }
+  float range(float lo, float hi) { return lo + (hi - lo) * uniform(); }
+};
+
 inline float hash(int x, int y, std::uint32_t seed) {
   std::uint32_t h = static_cast<std::uint32_t>(x) * 374761393u +
                     static_cast<std::uint32_t>(y) * 668265263u + seed * 2654435761u;

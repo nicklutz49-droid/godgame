@@ -47,6 +47,10 @@ add_executable(godgame
   src/Camera.cpp
   src/World.cpp
   src/Hand.cpp
+  src/Physics.cpp
+  src/Village.cpp
+  src/Villagers.cpp
+  src/Models.cpp
 )
 
 # We call SDL_SetMainReady() ourselves and use a plain main().

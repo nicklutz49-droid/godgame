@@ -10,8 +10,8 @@ class Water {
  public:
   void init();
   void draw(const glm::mat4& viewProj, const glm::vec3& camPos,
-            const glm::vec3& sunDir, const glm::vec3& fogColor,
-            float fogDensity, float time);
+            const glm::vec3& sunDir, const glm::vec3& sunColor,
+            const glm::vec3& fogColor, float fogDensity, float time);
 
  private:
   Mesh mesh_;
