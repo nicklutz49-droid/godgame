@@ -1,0 +1,12 @@
+build/
+build-*/
+out/
+.cache/
+compile_commands.json
+.vs/
+.vscode/
+*.o
+*.obj
+*.exe
+screenshot*.bmp
+screenshot*.png
