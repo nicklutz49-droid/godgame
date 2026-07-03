@@ -253,6 +253,7 @@ void planFarmer(World& w, Village& vil, int vi, int i) {
 void planFisherman(World& w, Village& vil, int vi, int i) {
   Villager& v = vil.villagers[i];
   (void)w;
+  (void)vi;
   if (v.carriedProp >= 0) {
     v.state = VState::Haul;
     v.moveTarget = xz(vil.storagePos());
