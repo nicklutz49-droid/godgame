@@ -7,7 +7,8 @@ distribution. Slices so far: living village (docs/plan-villagers.md),
 worship/belief/mana/temple + food miracle (docs/plan-worship.md), scaffolds &
 the building roster (docs/plan-scaffolds.md), mortality & burial, multi-
 village worlds with neutrals, gods & conversion (per-god belief + ownership
-ratchet). Master arc: docs/plan-game.md (next: M5 the rival AI god).
+ratchet), the rival AI god (docs/plan-rival.md). Master arc: docs/plan-game.md
+(next: M6 the map editor).
 
 Multi-village invariants: `World::villages[0]` is the player's home village;
 indices are stable for the session. Prop `claimedBy`/`carrier` store packed

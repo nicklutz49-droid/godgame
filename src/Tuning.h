@@ -101,7 +101,7 @@ inline constexpr float kConvertLeadMargin = 0.1f;     // ...if clearly ahead of 
 inline constexpr float kStealBelief = 0.85f;     // stealing an OWNED village needs
 inline constexpr float kStealOwnerBelow = 0.35f; // overwhelming faith + a lapsed owner
 inline constexpr float kConversionScatter = 0.35f;  // fraction who panic at the flip
-inline constexpr float kAweGiftThrown = 0.02f;   // a gift hurled from afar, received
+inline constexpr float kAweGiftThrown = 0.05f;   // a gift hurled from afar, received
 
 // --- worship, belief, mana, miracles ---
 inline constexpr float kManaStart = 20.0f;
@@ -117,13 +117,24 @@ inline constexpr float kBeliefDecayPerDay = 0.08f;
 inline constexpr float kBeliefFromWorshipPerDay = 0.06f;  // per active dancer
 inline constexpr float kAweGrab = 0.004f;
 inline constexpr float kAweThrow = 0.012f;
-inline constexpr float kAweGift = 0.03f;
+inline constexpr float kAweGift = 0.07f;  // food into the stores wins hearts
 inline constexpr float kAweMiracle = 0.09f;
 inline constexpr float kTempleInfluence = 70.0f;      // base ring radius
 inline constexpr float kVillageInfluenceBase = 50.0f;
 inline constexpr float kVillageInfluenceScale = 90.0f;  // + belief * this
 inline constexpr float kFoodMiracleCost = 30.0f;
 inline constexpr int kFoodMiracleBundles = 4;
+
+// --- the rival god (M5): difficulty is cadence and reach, never cheats ---
+inline constexpr float kAiThinkPeriod = 2.5f;    // strategos decision cadence
+inline constexpr float kAiActCooldown = 2.0f;    // pause between hand orders
+inline constexpr float kAiHandSpeed = 26.0f;     // m/s enemy hand travel
+inline constexpr float kAiHandHover = 5.5f;      // carry height above ground
+inline constexpr float kAiThrowRange = 110.0f;   // gift runs launch from here
+inline constexpr float kAiFoodReserve = 10.0f;   // feed an owned village below
+inline constexpr float kAiManaReserve = 15.0f;   // keep this much after courting
+inline constexpr int kAiWorshippersPer = 8;      // +1 worshipper per N villagers
+inline constexpr float kAiAggression = 0.35f;    // chance a spare gift targets YOU
 
 // --- mortality (M2: the seams are live) ---
 inline constexpr bool kVillagersInvulnerable = false;

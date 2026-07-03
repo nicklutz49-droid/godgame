@@ -123,7 +123,7 @@ void Village::spawnVillagers(World& world, std::uint32_t seed, int villageIdx) {
   const Job neutralJobs[8] = {Job::Forester, Job::Farmer, Job::Fisherman,
                               Job::Builder,  Job::None,   Job::None,
                               Job::None,     Job::None};
-  const Job* starterJobs = owner == 0 ? ownedJobs : neutralJobs;
+  const Job* starterJobs = owner >= 0 ? ownedJobs : neutralJobs;
   glm::vec3 fire = campfirePos();
   for (int i = 0; i < tune::kStartPopulation; ++i) {
     Villager v;

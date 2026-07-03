@@ -93,17 +93,32 @@ std::vector<glm::vec2> World::findVillageSites(int count) const {
   return picked;
 }
 
-void World::generate(std::uint32_t seed) {
+void World::generate(std::uint32_t seed, int godCount) {
   seed_ = seed;
   miracleCounter_ = 0;
   terrain.generate(seed);
+  godCount = std::clamp(godCount, 1, tune::kMaxGods);
 
-  // Found the player's home village on the best site, neutrals on the rest.
-  std::vector<glm::vec2> sites = findVillageSites(1 + tune::kNeutralVillages);
+  // Found the player's home village on the best site. In a skirmish world the
+  // rival takes the picked site farthest from it; the rest stay neutral. A
+  // hostile island that yields a single site simply never wakes the rival.
+  std::vector<glm::vec2> sites = findVillageSites(godCount + tune::kNeutralVillages);
+  int rivalSite = -1;
+  if (godCount >= 2 && sites.size() >= 2) {
+    float bestD = -1.0f;
+    for (std::size_t s = 1; s < sites.size(); ++s) {
+      float d = glm::distance(sites[0], sites[s]);
+      if (d > bestD) {
+        bestD = d;
+        rivalSite = static_cast<int>(s);
+      }
+    }
+  }
   villages.clear();
   villages.resize(sites.size());
   for (std::size_t v = 0; v < sites.size(); ++v) {
-    villages[v].owner = v == 0 ? 0 : -1;
+    villages[v].owner =
+        v == 0 ? 0 : (static_cast<int>(v) == rivalSite ? 1 : -1);
     bool hard = v == 0 && sites.size() == 1 &&
                 terrain.heightAt(sites[0].x, sites[0].y) < 2.5f;
     villages[v].plan(*this, seed + static_cast<std::uint32_t>(v) * 7919u, sites[v],
@@ -115,7 +130,14 @@ void World::generate(std::uint32_t seed) {
   gods[0].isPlayer = true;
   gods[0].mana = tune::kManaStart;
   gods[0].manaMax = tune::kManaMax;
-  foundTemple();               // also flattens; must precede prop scatter
+  if (rivalSite >= 0) {
+    gods[1].active = true;
+    gods[1].ai = true;
+    gods[1].mana = tune::kManaStart;
+    gods[1].manaMax = tune::kManaMax;
+  }
+  foundTemple(0, 0);           // also flattens; must precede prop scatter
+  if (rivalSite >= 0) foundTemple(1, rivalSite);
   scatterProps();
   for (std::size_t v = 0; v < villages.size(); ++v)
     villages[v].spawnVillagers(*this, seed, static_cast<int>(v));
@@ -123,12 +145,22 @@ void World::generate(std::uint32_t seed) {
   handPos = glm::vec3(0.0f, 1.0e9f, 0.0f);
   handSpeed = 0.0f;
   obstacleGrid_.assign(kObstacleGridN * kObstacleGridN, {});
+  for (int g = 0; g < tune::kMaxGods; ++g) ai[g].reset(*this, g);
 }
 
-void World::foundTemple() {
-  if (villages.empty() || !home().founded) return;
-  const Village& village = home();
-  Temple& temple = gods[0].temple;
+bool World::godBroken(int god) const {
+  if (god < 0 || god >= tune::kMaxGods || !gods[god].active) return false;
+  for (const Village& v : villages)
+    if (v.founded && v.owner == god) return false;
+  return true;
+}
+
+void World::foundTemple(int god, int villageIdx) {
+  if (villageIdx < 0 || villageIdx >= static_cast<int>(villages.size()) ||
+      !villages[villageIdx].founded)
+    return;
+  const Village& village = villages[villageIdx];
+  Temple& temple = gods[god].temple;
   // Just outside the village on the first workable compass direction. The
   // field direction (index 2) is excluded so its terrace is never disturbed.
   static const glm::vec2 kDirs[7] = {
@@ -357,10 +389,13 @@ void World::scatterProps() {
     bool inVillage = false;
     for (const Village& v : villages) inVillage |= v.insideFootprint(x, z);
     if (inVillage) continue;
-    if (gods[0].temple.founded &&
-        glm::distance(glm::vec2(x, z), glm::vec2(gods[0].temple.pos.x,
-                                                 gods[0].temple.pos.z)) < 18.0f)
-      continue;
+    bool onTempleGround = false;
+    for (const God& g : gods)
+      onTempleGround |=
+          g.temple.founded &&
+          glm::distance(glm::vec2(x, z),
+                        glm::vec2(g.temple.pos.x, g.temple.pos.z)) < 18.0f;
+    if (onTempleGround) continue;
     float forest = noise::fbm(x * 0.016f, z * 0.016f, 3, seed_ + 31u);
     if (forest < 0.52f && !(forest > 0.40f && rng.uniform() < 0.15f)) continue;
     if (occupied.count(cellKey(x, z))) continue;
@@ -389,10 +424,13 @@ void World::scatterProps() {
     bool inVillage = false;
     for (const Village& v : villages) inVillage |= v.insideFootprint(x, z);
     if (inVillage) continue;
-    if (gods[0].temple.founded &&
-        glm::distance(glm::vec2(x, z), glm::vec2(gods[0].temple.pos.x,
-                                                 gods[0].temple.pos.z)) < 18.0f)
-      continue;
+    bool onTempleGround = false;
+    for (const God& g : gods)
+      onTempleGround |=
+          g.temple.founded &&
+          glm::distance(glm::vec2(x, z),
+                        glm::vec2(g.temple.pos.x, g.temple.pos.z)) < 18.0f;
+    if (onTempleGround) continue;
 
     Prop p;
     p.type = PropType::Rock;
@@ -411,6 +449,10 @@ void World::scatterProps() {
 void World::update(float dt) {
   dayCycle.advance(dt);
   rebuildObstacleGrid();
+  // AI gods act here, in god-index order, before the villagers think - a
+  // fixed spot in the frame so runs stay deterministic.
+  for (int g = 0; g < tune::kMaxGods; ++g)
+    if (gods[g].active && gods[g].ai) ai[g].update(*this, dt);
   villagersUpdate(*this, dt);
 
   for (std::size_t idx = 0; idx < props.size(); ++idx) {
@@ -539,9 +581,9 @@ int World::tryCombineScaffold(int scaffoldIdx) {
   return best;
 }
 
-// Which OWNED village would host a stack placed at `pos`? Runs every
-// validity rule; returns -1 if the placement is invalid everywhere.
-int World::scaffoldHostVillage(const glm::vec3& pos, int count) const {
+// Which village OWNED BY `god` would host a stack placed at `pos`? Runs
+// every validity rule; returns -1 if the placement is invalid everywhere.
+int World::scaffoldHostVillage(const glm::vec3& pos, int count, int god) const {
   glm::vec2 p2(pos.x, pos.z);
 
   // Center upgrades happen AT a totem; everything else needs open ground.
@@ -549,7 +591,7 @@ int World::scaffoldHostVillage(const glm::vec3& pos, int count) const {
       Village::buildingForStack(count, BuildingType::Store) == BuildingType::Center;
   for (std::size_t vi = 0; vi < villages.size(); ++vi) {
     const Village& v = villages[vi];
-    if (!v.founded || v.owner != 0) continue;
+    if (!v.founded || v.owner != god) continue;
     glm::vec2 c2(v.center.x, v.center.z);
     if (isCenter) {
       if (glm::distance(p2, c2) < 8.0f && v.centerIdx >= 0 &&
@@ -577,10 +619,11 @@ int World::scaffoldHostVillage(const glm::vec3& pos, int count) const {
       }
       if (other.insideAnyField(pos.x, pos.z, footprint * 0.5f + 1.0f)) return -1;
     }
-    if (gods[0].temple.founded &&
-        glm::distance(glm::vec2(gods[0].temple.pos.x, gods[0].temple.pos.z), p2) <
-            14.0f)
-      return -1;
+    for (const God& g : gods) {
+      if (!g.temple.founded) continue;
+      if (glm::distance(glm::vec2(g.temple.pos.x, g.temple.pos.z), p2) < 14.0f)
+        return -1;
+    }
     for (const Prop& p : props) {
       if (!p.alive) continue;
       if (p.type != PropType::Tree && p.type != PropType::Rock &&
@@ -594,17 +637,17 @@ int World::scaffoldHostVillage(const glm::vec3& pos, int count) const {
   return -1;
 }
 
-bool World::scaffoldPlacementValid(const glm::vec3& pos, int count) const {
-  return scaffoldHostVillage(pos, count) >= 0;
+bool World::scaffoldPlacementValid(const glm::vec3& pos, int count, int god) const {
+  return scaffoldHostVillage(pos, count, god) >= 0;
 }
 
-bool World::tryPlaceScaffold(int scaffoldIdx, BuildingType civicChoice) {
+bool World::tryPlaceScaffold(int scaffoldIdx, BuildingType civicChoice, int god) {
   if (scaffoldIdx < 0 || scaffoldIdx >= static_cast<int>(props.size())) return false;
   Prop& s = props[scaffoldIdx];
   if (!s.alive || s.type != PropType::Scaffold) return false;
   int count = std::clamp(static_cast<int>(std::lround(s.resource)), 1,
                          tune::kMaxScaffoldStack);
-  int host = scaffoldHostVillage(s.pos, count);
+  int host = scaffoldHostVillage(s.pos, count, god);
   if (host < 0) return false;
   Village& village = villages[host];
 

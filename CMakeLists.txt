@@ -50,6 +50,7 @@ add_executable(godgame
   src/Physics.cpp
   src/Village.cpp
   src/Villagers.cpp
+  src/GodAI.cpp
   src/Models.cpp
 )
 

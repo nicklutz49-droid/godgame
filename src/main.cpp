@@ -1,10 +1,12 @@
 // godgame - a Black & White inspired god game (first slice: land, camera, hand).
 //
 // Modes:
-//   godgame                          interactive
-//   godgame --seed 1234              interactive with a specific island seed
+//   godgame                          interactive skirmish (a rival god plays too)
+//   godgame --no-rival               interactive sandbox, no opponent
+//   godgame --seed 1234              a specific island seed
 //   godgame --headless [steps]       no window; generate + simulate + self-test
-//   godgame --screenshot out.bmp [frames] [far|close]   render offscreen-ish and dump a BMP
+//   godgame --match [days]           no window; AI-vs-AI skirmish, day-by-day report
+//   godgame --screenshot out.bmp [frames] [far|close|village|night|temple|rival|roster]
 
 #include <SDL.h>
 #include <glm/glm.hpp>
@@ -207,19 +209,20 @@ bool writeBMP(const char* path, int w, int h, const std::vector<unsigned char>& 
   return true;
 }
 
-// A terrain-following band at `radius` around `center` - the influence ring.
-MeshData buildRingMeshData(const Terrain& terrain, glm::vec2 center, float radius) {
+// A terrain-following band at `radius` around `center` - the influence ring,
+// colored for whichever god projects it.
+MeshData buildRingMeshData(const Terrain& terrain, glm::vec2 center, float radius,
+                           glm::vec3 color = glm::vec3(1.0f, 0.88f, 0.45f)) {
   MeshData md;
   const int kSegments = 120;
   const float kHalfWidth = 0.55f;
-  const glm::vec3 gold(1.0f, 0.88f, 0.45f);
   for (int s = 0; s <= kSegments; ++s) {
     float a = 6.2831853f * static_cast<float>(s) / kSegments;
     glm::vec2 dir(std::sin(a), std::cos(a));
     for (float r : {radius - kHalfWidth, radius + kHalfWidth}) {
       glm::vec2 p = center + dir * r;
       float y = std::max(terrain.heightAt(p.x, p.y), Terrain::WATER_LEVEL) + 0.18f;
-      md.addVertex(glm::vec3(p.x, y, p.y), glm::vec3(0, 1, 0), gold);
+      md.addVertex(glm::vec3(p.x, y, p.y), glm::vec3(0, 1, 0), color);
     }
   }
   for (int s = 0; s < kSegments; ++s) {
@@ -234,6 +237,14 @@ glm::mat4 orientToNormal(const glm::vec3& n) {
   if (n.y > 0.999f) return glm::mat4(1.0f);
   glm::vec3 axis = glm::normalize(glm::cross(glm::vec3(0, 1, 0), n));
   return glm::rotate(glm::mat4(1.0f), std::acos(std::clamp(n.y, -1.0f, 1.0f)), axis);
+}
+
+// Each god's identity color (rings, totem accents, the rival's hand).
+// Neutral = unpainted.
+glm::vec3 godColor(int god) {
+  if (god == 0) return {1.0f, 0.88f, 0.45f};   // the player: gold
+  if (god == 1) return {0.95f, 0.35f, 0.30f};  // the rival: crimson
+  return {1.0f, 1.0f, 1.0f};
 }
 
 // -------------------------------------------------------------------- app
@@ -265,9 +276,10 @@ struct App {
   Mesh fieldSlabMesh, cropMesh, smokeDisc;
   Mesh bubbleHungerMesh, bubbleSleepMesh, bubbleFearMesh;
   Mesh templeMesh, templeCrystalMesh;
-  Mesh templeRing;
+  Mesh templeRings[tune::kMaxGods];
   std::vector<Mesh> villageRings;
   std::vector<float> lastRingRadii;
+  std::vector<int> lastRingOwners;
   Mesh largeAbodeMesh, workshopMesh, storeMesh, crecheMesh, graveyardMesh;
   Mesh dispenserMesh, wonderMesh, scaffoldMesh;
   Mesh bodyMeshes[3];
@@ -279,6 +291,8 @@ struct App {
   };
   std::vector<CastEffect> effects;
   std::vector<int> lastOwners;  // detects conversion ceremonies
+  bool wasBroken[tune::kMaxGods] = {};  // detects defeat / victory
+  bool rivalEnabled = true;             // --no-rival reverts to the sandbox
 
   const Mesh* buildingMesh(BuildingType t);
   void refreshVillageRings();
@@ -441,42 +455,53 @@ const Mesh* App::buildingMesh(BuildingType t) {
 
 void App::rebuildWorld(std::uint32_t newSeed) {
   seed = newSeed;
-  world.generate(seed);
+  world.generate(seed, rivalEnabled ? 2 : 1);
   terrainMesh.upload(world.terrain.buildMeshData());
   hand.mode = Hand::Mode::Free;
   hand.held.clear();
   hand.hover.clear();
   effects.clear();
-  if (world.gods[0].temple.founded)
-    templeRing.upload(buildRingMeshData(
-        world.terrain, glm::vec2(world.gods[0].temple.pos.x, world.gods[0].temple.pos.z),
-        tune::kTempleInfluence));
+  for (int g = 0; g < tune::kMaxGods; ++g) {
+    wasBroken[g] = false;
+    const Temple& t = world.gods[g].temple;
+    if (world.gods[g].active && t.founded)
+      templeRings[g].upload(buildRingMeshData(world.terrain,
+                                              glm::vec2(t.pos.x, t.pos.z),
+                                              tune::kTempleInfluence, godColor(g)));
+    else
+      templeRings[g] = Mesh{};
+  }
   villageRings.clear();
   villageRings.resize(world.villages.size());
   lastRingRadii.assign(world.villages.size(), -1.0f);
+  lastRingOwners.assign(world.villages.size(), -2);
   refreshVillageRings();
   int totalPop = 0;
   for (const Village& v : world.villages) totalPop += v.population();
-  SDL_Log("World seed %u | land %.0f%% | height %.1f..%.1f | %zu props | %zu villages, pop %d",
+  SDL_Log("World seed %u | land %.0f%% | height %.1f..%.1f | %zu props | %zu villages, pop %d%s",
           seed, world.terrain.landFraction() * 100.0f, world.terrain.minHeight(),
           world.terrain.maxHeight(), world.props.size(), world.villages.size(),
-          totalPop);
+          totalPop, world.gods[1].active ? " | a rival god stirs" : "");
 }
 
-// Owned villages project gold rings that grow with belief; rebuild each
-// ring's terrain-following mesh only when its radius genuinely changes.
+// Owned villages project their god's rings, growing with belief; rebuild each
+// ring's terrain-following mesh only when its radius or owner truly changes.
 void App::refreshVillageRings() {
   for (std::size_t v = 0; v < world.villages.size(); ++v) {
     const Village& vil = world.villages[v];
-    if (!vil.founded || vil.owner != 0) {
+    if (!vil.founded || vil.owner < 0) {
       lastRingRadii[v] = -1.0f;
+      lastRingOwners[v] = vil.owner;
+      villageRings[v] = Mesh{};
       continue;
     }
     float r = vil.influenceRadius();
-    if (std::abs(r - lastRingRadii[v]) > 0.75f) {
+    if (std::abs(r - lastRingRadii[v]) > 0.75f || lastRingOwners[v] != vil.owner) {
       lastRingRadii[v] = r;
+      lastRingOwners[v] = vil.owner;
       villageRings[v].upload(buildRingMeshData(
-          world.terrain, glm::vec2(vil.center.x, vil.center.z), r));
+          world.terrain, glm::vec2(vil.center.x, vil.center.z), r,
+          godColor(vil.owner)));
     }
   }
 }
@@ -675,9 +700,21 @@ void App::update(float dt) {
     if (lastOwners[v] != -2 && lastOwners[v] != owner) {
       effects.push_back({world.villages[v].center, 0.0f});
       SDL_Log(owner == 0 ? "A village has joined your faith!"
-                         : "A village has fallen to another god!");
+                         : "A village has fallen to the rival god!");
     }
     lastOwners[v] = owner;
+  }
+
+  // Defeat and victory (the full ceremony arrives with the skirmish shell).
+  for (int g = 0; g < tune::kMaxGods; ++g) {
+    bool broken = world.godBroken(g);
+    if (broken && !wasBroken[g]) {
+      if (g == 0)
+        SDL_Log("Your last village has fallen. The island forgets you...");
+      else
+        SDL_Log("The rival god is broken - its hand hangs still. The island is yours!");
+    }
+    wasBroken[g] = broken;
   }
 
   for (CastEffect& e : effects) e.age += dt;
@@ -687,13 +724,6 @@ void App::update(float dt) {
 }
 
 namespace {
-
-// Each god's identity color (rings, totem accents). Neutral = unpainted.
-glm::vec3 godColor(int god) {
-  if (god == 0) return {1.0f, 0.88f, 0.45f};   // the player: gold
-  if (god == 1) return {0.95f, 0.35f, 0.30f};  // the rival: crimson (M5)
-  return {1.0f, 1.0f, 1.0f};
-}
 
 glm::vec3 jobTint(Job j) {
   switch (j) {
@@ -807,15 +837,18 @@ void App::render(float time) {
   }
   lit.set("uEmissive", 0.0f);
 
-  // The temple: the god's seat, its crystal glowing with stored mana.
-  if (world.gods[0].temple.founded) {
-    glm::mat4 tm = glm::translate(glm::mat4(1.0f), world.gods[0].temple.pos) *
-                   glm::rotate(glm::mat4(1.0f), world.gods[0].temple.yaw, glm::vec3(0, 1, 0));
+  // The temples: each god's seat, crystals glowing with stored mana, the
+  // rival's stonework washed in its color.
+  for (int g = 0; g < tune::kMaxGods; ++g) {
+    const God& deity = world.gods[g];
+    if (!deity.active || !deity.temple.founded) continue;
+    glm::mat4 tm = glm::translate(glm::mat4(1.0f), deity.temple.pos) *
+                   glm::rotate(glm::mat4(1.0f), deity.temple.yaw, glm::vec3(0, 1, 0));
     lit.set("uModel", tm);
+    if (g != 0)
+      lit.set("uTint", glm::mix(glm::vec3(1.0f), godColor(g), 0.35f));
     templeMesh.draw();
-    float manaFrac = world.gods[0].manaMax > 0.0f
-                         ? world.gods[0].mana / world.gods[0].manaMax
-                         : 0.0f;
+    float manaFrac = deity.manaMax > 0.0f ? deity.mana / deity.manaMax : 0.0f;
     // The beacon floats above the roof so the mana level reads from anywhere.
     lit.set("uEmissive",
             0.30f + 0.60f * manaFrac + 0.05f * std::sin(time * 3.1f));
@@ -825,6 +858,7 @@ void App::render(float time) {
                           glm::scale(glm::mat4(1.0f), glm::vec3(1.25f)));
     templeCrystalMesh.draw();
     lit.set("uEmissive", 0.0f);
+    lit.set("uTint", glm::vec3(1.0f));
   }
 
   // Villages: buildings, stock piles, fields - owned and neutral alike.
@@ -1060,11 +1094,12 @@ void App::render(float time) {
     }
   }
 
-  // Influence rings: where the god's hand may act.
+  // Influence rings: where each god's hand may act (gold = yours).
   {
     lit.set("uModel", glm::mat4(1.0f));
     lit.set("uAlpha", 0.26f + 0.06f * std::sin(time * 1.8f));
-    if (templeRing.valid()) templeRing.draw();
+    for (const Mesh& ring : templeRings)
+      if (ring.valid()) ring.draw();
     for (const Mesh& ring : villageRings)
       if (ring.valid()) ring.draw();
   }
@@ -1154,11 +1189,29 @@ void App::render(float time) {
 
   water.draw(vp, camPos, sunDir, sunColor, fogColor, fogDensity, time);
 
-  // The divine hand, drawn last.
+  // The rival's embodied hand: ghostly, its own color, readable from afar.
   gl.Enable(GL_BLEND);
   gl.BlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
   gl.DepthMask(GL_FALSE);
   lit.use();
+  for (int g = 0; g < tune::kMaxGods; ++g) {
+    if (!world.gods[g].active || !world.gods[g].ai) continue;
+    const GodAI& brain = world.ai[g];
+    if (brain.handPos.y > 1.0e8f) continue;
+    glm::vec2 v2(brain.handVel.x, brain.handVel.z);
+    float yaw = glm::length(v2) > 1.0f ? std::atan2(v2.x, v2.y)
+                                       : time * 0.35f;  // idle: slow menace
+    glm::mat4 model = glm::translate(glm::mat4(1.0f), brain.handPos) *
+                      glm::rotate(glm::mat4(1.0f), yaw, glm::vec3(0, 1, 0)) *
+                      glm::rotate(glm::mat4(1.0f), -0.30f, glm::vec3(1, 0, 0)) *
+                      glm::scale(glm::mat4(1.0f), glm::vec3(2.6f));
+    lit.set("uModel", model);
+    lit.set("uTint", godColor(g));
+    lit.set("uAlpha", 0.55f);
+    lit.set("uEmissive", 0.30f);
+    (brain.held.none() ? handOpen : handClosed).draw();
+  }
+  lit.set("uTint", glm::vec3(1.0f));
   float handScale = std::clamp(cam.distance * 0.045f, 1.2f, 8.0f);
   glm::mat4 handModel = glm::translate(glm::mat4(1.0f), hand.pos) *
                         glm::rotate(glm::mat4(1.0f), cam.yaw, glm::vec3(0, 1, 0)) *
@@ -1256,6 +1309,15 @@ int App::runScreenshot(const std::string& path, int frames, const std::string& v
     cam.focus = world.gods[0].temple.pos;
     cam.distance = 55.0f;
     cam.yaw = world.gods[0].temple.yaw + 3.14159f;
+  } else if (view == "rival") {
+    // The rival god's home village (falls back to the second village).
+    glm::vec3 focus = world.villages.size() > 1 ? world.villages[1].center
+                                                : world.home().center;
+    for (const Village& v : world.villages)
+      if (v.founded && v.owner == 1) focus = v.center;
+    cam.focus = focus;
+    cam.distance = 95.0f;
+    cam.yaw = 1.1f;
   } else if (view == "roster") {
     // A model-viewer scene: every scaffold-built building in a row, plus
     // scaffold stacks, so the whole roster can be eyeballed at once.
@@ -1377,7 +1439,18 @@ std::uint64_t worldChecksum(const World& w) {
   h = fnvMix(h, &fieldCount, sizeof fieldCount);
   for (int g = 0; g < tune::kMaxGods; ++g) addF(vil.belief[g]);
   }
-  for (int g = 0; g < tune::kMaxGods; ++g) addF(w.gods[g].mana);
+  for (int g = 0; g < tune::kMaxGods; ++g) {
+    addF(w.gods[g].mana);
+    // The AI hands are sim state too (villagers fear them).
+    if (w.ai[g].handPos.y < 1.0e8f) {
+      addF(w.ai[g].handPos.x);
+      addF(w.ai[g].handPos.y);
+      addF(w.ai[g].handPos.z);
+    }
+    int aiState[2] = {static_cast<int>(w.ai[g].phase),
+                      static_cast<int>(w.ai[g].verb)};
+    h = fnvMix(h, aiState, sizeof aiState);
+  }
   addF(w.dayCycle.t);
   return h;
 }
@@ -1972,6 +2045,191 @@ int runHeadless(std::uint32_t seed, int steps) {
           "a gift landed on their pile is credited to you");
   }
 
+  // [13] The rival god: symmetric skirmish start, an embodied AI hand that
+  // plays through the player's verbs, and a game that can be lost.
+  std::printf("[13] the rival god\n");
+  {
+    const float dtr = 1.0f / 60.0f;
+    World w10;
+    w10.generate(seed, 2);
+    check(w10.gods[1].active && !w10.gods[1].isPlayer && w10.gods[1].ai,
+          "a rival god wakes on skirmish worlds");
+    int rivalHome = -1, rivalCount = 0;
+    for (std::size_t v = 0; v < w10.villages.size(); ++v)
+      if (w10.villages[v].owner == 1) {
+        rivalHome = static_cast<int>(v);
+        ++rivalCount;
+      }
+    check(rivalHome > 0 && rivalCount == 1, "the rival owns exactly one village");
+    check(w10.villages[0].owner == 0, "your home is still yours");
+    if (rivalHome > 0) {
+      const Village& rh = w10.villages[rivalHome];
+      float dHomes = glm::distance(glm::vec2(rh.center.x, rh.center.z),
+                                   glm::vec2(w10.home().center.x, w10.home().center.z));
+      float dTemple = w10.gods[1].temple.founded
+                          ? glm::distance(glm::vec2(w10.gods[1].temple.pos.x,
+                                                    w10.gods[1].temple.pos.z),
+                                          glm::vec2(rh.center.x, rh.center.z))
+                          : -1.0f;
+      std::printf("      rival home %.0f m from yours | its temple %.0f m out\n",
+                  dHomes, dTemple);
+      check(dHomes > tune::kVillageMinSeparation - 1.0f,
+            "the rival settles far from you");
+      check(w10.gods[1].temple.founded, "the rival founded its own temple");
+      check(dTemple > 30.0f && dTemple < 80.0f, "its temple stands apart, nearby");
+      bool hasWorship = false;
+      for (const Villager& p : rh.villagers) hasWorship |= p.job == Job::Worshipper;
+      check(hasWorship, "its village worships it from the start");
+      check(rh.belief[1] >= tune::kBeliefStart - 0.01f, "its faith is seeded");
+      check(w10.insideInfluence(rh.center, 1), "its ring answers to it");
+      check(!w10.insideInfluence(rh.center, 0), "and not to you");
+    }
+
+    // Its worship fills ITS pool.
+    w10.dayCycle.t = 0.40f;
+    w10.dayCycle.secondsPerDay = 240.0f;
+    float rivalMana = w10.gods[1].mana;
+    for (int s = 0; s < 30 * 60; ++s) w10.update(dtr);
+    std::printf("      rival mana %.1f -> %.1f\n", rivalMana, w10.gods[1].mana);
+    check(w10.gods[1].mana > rivalMana, "rival worship fills the rival pool");
+
+    // The embodied hand devotes: strip its worshippers and watch it restore
+    // the dance - grab an idle adult, carry it, drop it on the totem.
+    if (rivalHome > 0) {
+      Village& rh = w10.villages[rivalHome];
+      for (Villager& p : rh.villagers)
+        if (p.alive && p.job == Job::Worshipper) {
+          p.job = Job::None;
+          p.state = VState::Idle;
+          p.stateTimer = 0.2f;
+        }
+      int guard = 0;
+      bool restored = false;
+      for (; guard < 90 * 60 && !restored; ++guard) {
+        w10.update(dtr);
+        for (const Villager& p : rh.villagers)
+          restored |= p.alive && p.job == Job::Worshipper;
+      }
+      std::printf("      devotion restored after %.1f s (%d by hand so far)\n",
+                  static_cast<float>(guard) * dtr, w10.ai[1].devotions);
+      check(restored, "the AI devotes an idle adult by hand");
+
+      // Feeding: an empty larder with mana banked brings a food miracle.
+      rh.food = 0;
+      w10.gods[1].mana = 100.0f;
+      int feedsBefore = w10.ai[1].feeds;
+      for (int s = 0; s < 60 * 60 && w10.ai[1].feeds == feedsBefore; ++s)
+        w10.update(dtr);
+      check(w10.ai[1].feeds > feedsBefore, "a hungry village gets a miracle");
+      check(w10.gods[1].mana < 100.0f, "and the rival paid mana for it");
+
+      // Courting: quiet the governor (larder full, dancers content), plant a
+      // gift inside the rival's temple ring but beyond its villagers' reach,
+      // and watch the hand hurl it onto the nearest neutral's pad. Deliveries
+      // only count when witnessed, so run this in daylight - gifts landing on
+      // a sleeping village convince nobody.
+      rh.food = 40;
+      w10.dayCycle.t = 0.35f;
+      int neutralIdx = -1;
+      for (std::size_t v = 0; v < w10.villages.size(); ++v)
+        if (w10.villages[v].founded && w10.villages[v].owner < 0 &&
+            w10.villages[v].population() > 0)
+          neutralIdx = static_cast<int>(v);
+      if (neutralIdx >= 0) {
+        glm::vec2 t2(w10.gods[1].temple.pos.x, w10.gods[1].temple.pos.z);
+        glm::vec2 c2(rh.center.x, rh.center.z);
+        glm::vec2 dir = glm::normalize(t2 - c2);
+        glm::vec2 spot2 = t2 + dir * 55.0f;  // far side of the temple ring
+        Prop bait;
+        bait.type = PropType::Food;
+        bait.resource = 3.0f;
+        bait.radius = 0.45f;
+        bait.pos = glm::vec3(spot2.x,
+                             w10.terrain.heightAt(spot2.x, spot2.y) + 0.4f,
+                             spot2.y);
+        bait.asleep = true;
+        w10.spawnProp(bait);
+        float nBelief = w10.villages[neutralIdx].belief[1];
+        int giftsBefore = w10.ai[1].gifts;
+        // Decay pulls belief down every frame; only a credited delivery can
+        // push it UP. Any upward step proves the gift landed and was seen.
+        bool credited = false;
+        float prevB = nBelief;
+        int guard2 = 0;
+        for (; guard2 < 90 * 60 && !credited; ++guard2) {
+          w10.update(dtr);
+          float b = w10.villages[neutralIdx].belief[1];
+          credited |= b > prevB + 1.0e-6f;
+          prevB = b;
+        }
+        std::printf(
+            "      gift run: %d -> %d gifts | neutral belief in rival %.3f -> %.3f "
+            "after %.0f s\n",
+            giftsBefore, w10.ai[1].gifts, nBelief,
+            w10.villages[neutralIdx].belief[1],
+            static_cast<float>(guard2) * dtr);
+        check(w10.ai[1].gifts > giftsBefore, "the hand ran a gift to the neutral");
+        check(credited, "the delivery won the rival some faith there");
+      }
+    }
+
+    // A skirmish can be LOST: the ratchet takes your last village and breaks
+    // you; the rival can be broken the same way, and its hand goes still.
+    World w11;
+    w11.generate(seed, 2);
+    check(!w11.godBroken(0) && !w11.godBroken(1), "both gods start standing");
+    Village& ph = w11.villages[0];
+    ph.belief[1] = tune::kStealBelief + 0.05f;
+    ph.belief[0] = tune::kStealOwnerBelow - 0.05f;
+    w11.update(dtr);
+    check(ph.owner == 1, "your lapsed home falls to overwhelming rival faith");
+    check(w11.godBroken(0), "with no villages left, you are broken");
+    int rivalHome2 = -1;
+    for (std::size_t v = 0; v < w11.villages.size(); ++v)
+      if (w11.villages[v].owner == 1 && static_cast<int>(v) != 0)
+        rivalHome2 = static_cast<int>(v);
+    if (rivalHome2 > 0) {
+      // Hand every rival village to the player: the rival breaks too.
+      for (Village& v : w11.villages)
+        if (v.founded && v.owner == 1) {
+          v.belief[0] = tune::kStealBelief + 0.05f;
+          v.belief[1] = tune::kStealOwnerBelow - 0.05f;
+        }
+      w11.update(dtr);
+      check(w11.godBroken(1), "the rival can be broken the same way");
+      const GodAI& brain = w11.ai[1];
+      int actsBefore = brain.devotions + brain.feeds + brain.placements +
+                       brain.combines + brain.gifts + brain.courtCasts;
+      for (int s = 0; s < 20 * 60; ++s) w11.update(dtr);
+      int actsAfter = brain.devotions + brain.feeds + brain.placements +
+                      brain.combines + brain.gifts + brain.courtCasts;
+      check(actsAfter == actsBefore && brain.phase == GodAI::Phase::Rest,
+            "a broken god's hand goes still");
+    }
+
+    // AI-vs-AI: both gods played by brains, twice, bit-for-bit identical.
+    World wa, wb;
+    wa.generate(seed, 2);
+    wb.generate(seed, 2);
+    wa.gods[0].ai = true;
+    wb.gods[0].ai = true;
+    wa.dayCycle.t = wb.dayCycle.t = 0.40f;
+    wa.dayCycle.secondsPerDay = wb.dayCycle.secondsPerDay = 240.0f;
+    for (int s = 0; s < 60 * 60; ++s) {
+      wa.update(dtr);
+      wb.update(dtr);
+    }
+    std::uint64_t ha = worldChecksum(wa), hb = worldChecksum(wb);
+    int warActs = 0;
+    for (int g = 0; g < tune::kMaxGods; ++g)
+      warActs += wa.ai[g].devotions + wa.ai[g].feeds + wa.ai[g].placements +
+                 wa.ai[g].combines + wa.ai[g].gifts + wa.ai[g].courtCasts;
+    std::printf("      60 s of war: %d divine acts | checksum %016llx\n", warActs,
+                static_cast<unsigned long long>(ha));
+    check(ha == hb, "AI-vs-AI matches are deterministic");
+    check(warActs > 0, "the gods actually played");
+  }
+
   // [6] Three-day economy & schedule soak. Days are shrunk to 240 s - short
   // enough to simulate fast, long enough that walking/chopping (real-time
   // actions) still fit inside a work day.
@@ -2069,9 +2327,65 @@ int runHeadless(std::uint32_t seed, int steps) {
 
 }  // namespace
 
+// AI-vs-AI skirmish, no window: both gods played by brains at 240 s days.
+// The balance tool - watch the war unfold day by day, deterministically.
+int runMatch(std::uint32_t seed, int days) {
+  World w;
+  w.generate(seed, 2);
+  if (!w.gods[1].active) {
+    std::printf("Island %u is too hostile for a rival (one village site).\n", seed);
+    return 1;
+  }
+  w.gods[0].ai = true;
+  w.dayCycle.secondsPerDay = 240.0f;
+  const float dt = 1.0f / 60.0f;
+  const int stepsPerDay = static_cast<int>(240.0f / dt);
+
+  std::printf("AI-vs-AI match | seed %u | %zu villages\n", seed, w.villages.size());
+  for (int day = 1; day <= days; ++day) {
+    for (int s = 0; s < stepsPerDay; ++s) w.update(dt);
+    int owned[2] = {0, 0}, neutral = 0, pop = 0;
+    for (const Village& v : w.villages) {
+      if (!v.founded) continue;
+      pop += v.population();
+      if (v.owner == 0) ++owned[0];
+      else if (v.owner == 1) ++owned[1];
+      else ++neutral;
+    }
+    int acts[2] = {0, 0};
+    for (int g = 0; g < 2; ++g)
+      acts[g] = w.ai[g].devotions + w.ai[g].feeds + w.ai[g].placements +
+                w.ai[g].combines + w.ai[g].gifts + w.ai[g].courtCasts;
+    std::printf(
+        "day %2d | gold %d villages, mana %3.0f, %3d acts | crimson %d villages, "
+        "mana %3.0f, %3d acts | neutral %d | pop %d\n",
+        day, owned[0], w.gods[0].mana, acts[0], owned[1], w.gods[1].mana, acts[1],
+        neutral, pop);
+    for (std::size_t v = 0; v < w.villages.size(); ++v) {
+      const Village& vil = w.villages[v];
+      if (!vil.founded) continue;
+      std::printf("        village %zu: owner %2d | belief gold %.2f crimson %.2f "
+                  "| pop %d | food %d\n",
+                  v, vil.owner, vil.belief[0], vil.belief[1], vil.population(),
+                  vil.food);
+    }
+    if (w.godBroken(0) || w.godBroken(1)) {
+      std::printf("%s\n", w.godBroken(0) ? "The crimson god has won."
+                                         : "The gold god has won.");
+      break;
+    }
+  }
+  std::printf("checksum %016llx\n",
+              static_cast<unsigned long long>(worldChecksum(w)));
+  return 0;
+}
+
 int main(int argc, char** argv) {
   std::uint32_t seed = 20260702u;
   bool headless = false;
+  bool rival = true;
+  bool match = false;
+  int matchDays = 10;
   int headlessSteps = 900;
   std::string screenshotPath;
   int screenshotFrames = 90;
@@ -2084,6 +2398,11 @@ int main(int argc, char** argv) {
     } else if (arg == "--headless") {
       headless = true;
       if (i + 1 < argc && argv[i + 1][0] != '-') headlessSteps = std::atoi(argv[++i]);
+    } else if (arg == "--no-rival") {
+      rival = false;
+    } else if (arg == "--match") {
+      match = true;
+      if (i + 1 < argc && argv[i + 1][0] != '-') matchDays = std::atoi(argv[++i]);
     } else if (arg == "--screenshot" && i + 1 < argc) {
       screenshotPath = argv[++i];
       if (i + 1 < argc && argv[i + 1][0] != '-') screenshotFrames = std::atoi(argv[++i]);
@@ -2095,9 +2414,11 @@ int main(int argc, char** argv) {
   }
 
   if (headless) return runHeadless(seed, headlessSteps);
+  if (match) return runMatch(seed, matchDays);
 
   App app;
   app.seed = seed;
+  app.rivalEnabled = rival;
   if (!app.initGraphics()) return 1;
   app.initScene();
 

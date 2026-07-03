@@ -10,7 +10,39 @@ screen is procedural placeholder art. There is no creature, by design.
 ![The temple](docs/temple.png)
 ![The island](docs/island.png)
 
-## Current slice: gods & conversion
+## Current slice: the rival god
+
+A second god plays the island (design: [docs/plan-rival.md](docs/plan-rival.md)).
+Every new world is a **skirmish** now (`--no-rival` for the peaceful sandbox):
+
+![The rival's seat](docs/rival.png)
+
+- **Fully symmetric, verbs only.** The rival founds its home village and
+  temple on the site farthest from yours and plays through exactly the verbs
+  you have — grabbing and dropping villagers to assign jobs, combining and
+  placing scaffold stacks, casting food miracles, hurling gifts whose landing
+  is credited to their sender. No economic cheats; its villages run the same
+  simulation yours do.
+- **An embodied enemy hand.** Everything it does is executed by a ghostly
+  crimson hand that must fly to a thing before it can touch it — travel
+  speed, decision cadence, and cooldowns are the difficulty knobs. Villagers
+  fear it like they fear yours: they track the nearest looming hand, cower,
+  and flee it.
+- **Three layers of mind.** A per-village *governor* (keep worshippers
+  dancing, feed empty larders, place growth scaffolds by need), a
+  *strategos* (court the nearest neutral with gifts and — once its rings
+  reach — miracles; pressure your weakest village when bold), and an
+  *executor* (one order at a time, re-validated every phase — snatch its
+  target first and it shrugs and replans).
+- **A skirmish can be lost.** A god whose last village converts away is
+  **broken**: its hand withdraws to its temple and hangs still. That fate is
+  yours too — the ratchet doesn't care who it strips. (The temple-collapse
+  ceremony and proper win/lose flow arrive with the skirmish shell, M7.)
+- **The balance tool**: `godgame --match [days]` runs a deterministic
+  AI-vs-AI skirmish headless and reports the war day by day — villages held,
+  belief, mana, divine acts.
+
+## Previous slice: gods & conversion
 
 Belief is territory now (master plan: [docs/plan-game.md](docs/plan-game.md)).
 Villages keep a belief score **per god**, and enough faith flips a village to
@@ -202,11 +234,13 @@ The first configure downloads and builds SDL2; later builds are fast.
 ## Command line
 
 ```
-godgame                       play
+godgame                       play a skirmish against the rival god
+godgame --no-rival            peaceful sandbox, no opponent
 godgame --seed 1234           play a specific island
 godgame --headless [steps]    no window: world-gen, physics, village economy,
-                              hand-interaction and determinism self-tests
-godgame --screenshot out.bmp [frames] [far|close|village|night|temple|roster]
+                              hand-interaction, rival-AI and determinism self-tests
+godgame --match [days]        no window: AI-vs-AI skirmish, day-by-day war report
+godgame --screenshot out.bmp [frames] [far|close|village|night|temple|rival|roster]
 ```
 
 ## Roadmap
@@ -221,8 +255,8 @@ in [docs/plan-game.md](docs/plan-game.md). The short version:
 2. ✅ Mortality & burial (population becomes a real resource)
 3. ✅ Many villages (neutrals, the big multi-village refactor)
 4. ✅ Gods & conversion (per-god belief, the ownership ratchet)
-5. The rival AI god (fully symmetric, an embodied enemy hand) ← next
-6. In-game map editor → 7. skirmish shell → 8. balance — then story mode
+5. ✅ The rival AI god (fully symmetric, an embodied enemy hand)
+6. In-game map editor ← next → 7. skirmish shell → 8. balance — then story mode
 
 Also on the list: more miracles, original B&W asset loaders, sound.
 
@@ -247,5 +281,6 @@ src/
   Villager.h     villager data (jobs, states, needs)
   Villagers.*    villager AI: priority ladder, job loops, steering, poses
   Hand.*         the divine hand: hover, grab, carry, throw, assign
+  GodAI.*        the rival god: governor/strategos/executor, embodied AI hand
   Tuning.h       every gameplay constant
 ```

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "DayCycle.h"
+#include "GodAI.h"
 #include "Terrain.h"
 #include "Village.h"
 
@@ -59,10 +60,12 @@ struct Temple {
 };
 
 // A god: the player (id 0) or a rival (M5). Owns a temple and the mana pool
-// that its villages' worship fills and its miracles spend.
+// that its villages' worship fills and its miracles spend. `ai` hands the
+// god to a GodAI brain (rivals always; the player only in AI-vs-AI tests).
 struct God {
   bool active = false;
   bool isPlayer = false;
+  bool ai = false;
   Temple temple;
   float mana = 0.0f;
   float manaMax = 100.0f;
@@ -80,6 +83,7 @@ class World {
   // neutral (owner -1). Indices are stable for the whole session.
   std::vector<Village> villages;
   God gods[tune::kMaxGods];
+  GodAI ai[tune::kMaxGods];  // brains for gods with the ai flag set
   DayCycle dayCycle;
 
   Village& home() { return villages[0]; }
@@ -90,8 +94,14 @@ class World {
   glm::vec3 handPos{0.0f, 1.0e9f, 0.0f};
   float handSpeed = 0.0f;
 
-  void generate(std::uint32_t seed);
+  // godCount 1 = the peaceful sandbox; 2 = a skirmish world (the rival god
+  // founds its own home village and temple on the site farthest from yours).
+  void generate(std::uint32_t seed, int godCount = 1);
   void update(float dt);
+
+  // An active god with no villages left is broken: its AI goes still and its
+  // worship income is gone. (The temple-collapse ceremony arrives with M7.)
+  bool godBroken(int god) const;
 
   // Nearest prop whose (slightly enlarged) sphere the ray hits, or -1.
   int pickProp(const glm::vec3& origin, const glm::vec3& dir, float maxDist) const;
@@ -145,19 +155,20 @@ class World {
 
   // Commit a scaffold at its current position: validity-check the ground and
   // create the construction site for its stack count. `civicChoice` picks the
-  // building for 3-stacks. On success the prop is consumed.
-  bool tryPlaceScaffold(int scaffoldIdx, BuildingType civicChoice);
+  // building for 3-stacks; `god` must own the hosting village. On success the
+  // prop is consumed.
+  bool tryPlaceScaffold(int scaffoldIdx, BuildingType civicChoice, int god = 0);
 
   // Would tryPlaceScaffold succeed here? (drives the ghost preview color)
-  bool scaffoldPlacementValid(const glm::vec3& pos, int count) const;
+  bool scaffoldPlacementValid(const glm::vec3& pos, int count, int god = 0) const;
 
   std::uint32_t seed() const { return seed_; }
 
  private:
-  void foundTemple();
+  void foundTemple(int god, int villageIdx);
   void scatterProps();
   std::vector<glm::vec2> findVillageSites(int count) const;
-  int scaffoldHostVillage(const glm::vec3& pos, int count) const;
+  int scaffoldHostVillage(const glm::vec3& pos, int count, int god) const;
 
   static constexpr float kObstacleCell = 8.0f;
   static constexpr int kObstacleGridN =

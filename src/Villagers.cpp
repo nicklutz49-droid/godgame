@@ -946,10 +946,30 @@ void updateVillage(World& world, Village& vil, int vi, float dt) {
   const float dayFrac = dt / world.dayCycle.secondsPerDay;
   const float t = world.dayCycle.t;
 
-  float handGround = world.terrain.heightAt(world.handPos.x, world.handPos.z);
-  float handAlt = world.handPos.y - handGround;
-  float reactR = std::clamp(handAlt * tune::kReactRadiusPerAltitude, 6.0f, 18.0f);
-  bool handSwoop = world.handSpeed > 18.0f;
+  // Every god's hand frightens: the player's (fed by the app) and any AI
+  // god's embodied one. Each villager reacts to whichever looms nearest.
+  struct HandSense {
+    glm::vec2 at;
+    float y;
+    float alt;
+    bool swoop;
+  };
+  HandSense hands[1 + tune::kMaxGods];
+  int handCount = 0;
+  {
+    float hg = world.terrain.heightAt(world.handPos.x, world.handPos.z);
+    hands[handCount++] = {glm::vec2(world.handPos.x, world.handPos.z),
+                          world.handPos.y, world.handPos.y - hg,
+                          world.handSpeed > 18.0f};
+    for (int g = 0; g < tune::kMaxGods; ++g) {
+      if (!world.gods[g].active || !world.gods[g].ai) continue;
+      const glm::vec3& hp = world.ai[g].handPos;
+      if (hp.y > 1.0e8f) continue;  // resting out of the world
+      float ag = world.terrain.heightAt(hp.x, hp.z);
+      hands[handCount++] = {glm::vec2(hp.x, hp.z), hp.y, hp.y - ag,
+                            glm::length(world.ai[g].handVel) > 18.0f};
+    }
+  }
 
   for (int i = 0; i < static_cast<int>(vs.size()); ++i) {
     Villager& v = vs[i];
@@ -990,14 +1010,23 @@ void updateVillage(World& world, Village& vil, int vi, float dt) {
       if (v.blacklistTimer <= 0.0f) v.blacklistProp = -1;
     }
 
-    // Hand awareness (head tracking + cower + flinch).
-    float handDist = glm::distance(glm::vec2(world.handPos.x, world.handPos.z),
-                                   xz(v.pos));
-    bool handNear = handDist < reactR && std::abs(world.handPos.y - v.pos.y) < 30.0f;
+    // Hand awareness (head tracking + cower + flinch): the nearest hand.
+    int nearHand = 0;
+    float handDist = 1.0e9f;
+    for (int hi = 0; hi < handCount; ++hi) {
+      float d = glm::distance(hands[hi].at, xz(v.pos));
+      if (d < handDist) {
+        handDist = d;
+        nearHand = hi;
+      }
+    }
+    const HandSense& hand = hands[nearHand];
+    float reactR = std::clamp(hand.alt * tune::kReactRadiusPerAltitude, 6.0f, 18.0f);
+    bool handNear = handDist < reactR && std::abs(hand.y - v.pos.y) < 30.0f;
     v.lookAtHand = !v.inside && handNear;
     if (v.lookAtHand) {
-      float want = wrapAngle(std::atan2(world.handPos.x - v.pos.x,
-                                        world.handPos.z - v.pos.z) -
+      float want = wrapAngle(std::atan2(hand.at.x - v.pos.x,
+                                        hand.at.y - v.pos.z) -
                              v.yaw);
       want = std::clamp(want, -1.1f, 1.1f);
       v.headLook += (want - v.headLook) * std::min(1.0f, 8.0f * dt);
@@ -1050,9 +1079,9 @@ void updateVillage(World& world, Village& vil, int vi, float dt) {
       }
     }
 
-    // Fear response: cower when the hand looms and trauma is fresh.
+    // Fear response: cower when a hand looms and trauma is fresh.
     if (isVoluntary(v.state) && v.fear > 0.35f && handNear &&
-        (handAlt < 14.0f || handSwoop)) {
+        (hand.alt < 14.0f || hand.swoop)) {
       dropCargo(world, v);
       v.state = VState::Cower;
       v.stateTimer = 0.9f;
@@ -1125,7 +1154,7 @@ void updateVillage(World& world, Village& vil, int vi, float dt) {
           if (v.fear > 0.55f) {
             v.state = VState::Panic;
             v.stateTimer = tune::kPanicSeconds;
-            glm::vec2 away = xz(v.pos) - glm::vec2(world.handPos.x, world.handPos.z);
+            glm::vec2 away = xz(v.pos) - hand.at;  // flee the nearest hand
             float len = glm::length(away);
             away = len > 0.5f ? away / len
                               : glm::normalize(xz(vil.center) - xz(v.pos));
@@ -1277,7 +1306,7 @@ void villagersUpdate(World& world, float dt) {
       updateVillage(world, world.villages[v], static_cast<int>(v), dt);
 }
 
-void villagerGrabbed(World& world, int villageIdx, int idx) {
+void villagerGrabbed(World& world, int villageIdx, int idx, int god) {
   Village& vil = world.villages[villageIdx];
   Villager& v = vil.villagers[idx];
   v.held = true;
@@ -1287,11 +1316,11 @@ void villagerGrabbed(World& world, int villageIdx, int idx) {
   releaseClaims(world, vil, villageIdx, idx, v);
   v.fear = 1.0f;
   v.pendingAssign = false;
-  world.notifyDivineEvent(0, v.pos, 0.55f, tune::kAweGrab);
+  world.notifyDivineEvent(god, v.pos, 0.55f, tune::kAweGrab);
 }
 
 void villagerReleased(World& world, int villageIdx, int idx,
-                      const glm::vec3& velocity, bool gentle) {
+                      const glm::vec3& velocity, bool gentle, int god) {
   Village& vil = world.villages[villageIdx];
   Villager& v = vil.villagers[idx];
   v.held = false;
@@ -1309,7 +1338,7 @@ void villagerReleased(World& world, int villageIdx, int idx,
     glm::vec3 spinAxis = glm::cross(
         glm::normalize(vel + glm::vec3(0, 0.001f, 0)), glm::vec3(0, 1, 0));
     v.angVel = spinAxis * std::min(speed * 0.12f, 5.0f);
-    world.notifyDivineEvent(0, v.pos, 0.8f, tune::kAweThrow);
+    world.notifyDivineEvent(god, v.pos, 0.8f, tune::kAweThrow);
   }
 }
 

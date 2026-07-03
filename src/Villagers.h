@@ -29,13 +29,13 @@ inline int villagerId(int village, int index) { return village * 4096 + index; }
 // village by village.
 void villagersUpdate(World& world, float dt);
 
-// The hand closed around a villager.
-void villagerGrabbed(World& world, int villageIdx, int idx);
+// A hand closed around a villager (`god` = whose; witnesses credit them).
+void villagerGrabbed(World& world, int villageIdx, int idx, int god = 0);
 
 // The hand let go. gentle = drop-to-assign resolves at the landing point;
 // otherwise it is a throw (ballistic, flailing, panic on recovery).
 void villagerReleased(World& world, int villageIdx, int idx,
-                      const glm::vec3& velocity, bool gentle);
+                      const glm::vec3& velocity, bool gentle, int god = 0);
 
 // Ray-pick over props AND villagers; villagers win near-ties.
 GrabTarget pickTarget(const World& world, const glm::vec3& origin,
