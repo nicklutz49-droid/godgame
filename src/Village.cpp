@@ -197,11 +197,18 @@ void Village::step(World& world, float dt) {
   float sun = 0.25f + 0.75f * world.dayCycle.daylight();  // crops rest at night
 
   // Faith fades unless the god stays present (worship counteracts this).
-  // A Wonder slows the fade; a tended Graveyard quietly sustains it.
+  // A Wonder slows the fade; a tended Graveyard quietly sustains it; a body
+  // left rotting near the village is an accusation nobody forgets.
   float decay = tune::kBeliefDecayPerDay;
   if (insideWonderAura(center)) decay *= tune::kWonderDecayFactor;
   decay -= static_cast<float>(countCompleted(BuildingType::Graveyard)) *
            tune::kGraveyardBeliefPerDay;
+  for (const Prop& p : world.props) {
+    if (!p.alive || p.type != PropType::Body || p.carrier >= 0 || p.held) continue;
+    if (p.age > tune::kCorpseRotDays * world.dayCycle.secondsPerDay &&
+        glm::distance(xz(p.pos), xz(center)) < 60.0f)
+      decay += tune::kCorpseBeliefPerDay;
+  }
   belief = std::max(tune::kBeliefFloor, belief - decay * dayFrac);
 
   for (FarmCell& c : farmCells) {
@@ -319,6 +326,36 @@ bool Village::insideAnyField(float x, float z, float margin) const {
   return false;
 }
 
+int Village::population() const {
+  int n = 0;
+  for (const Villager& v : villagers)
+    if (v.alive) ++n;
+  return n;
+}
+
+int Village::completedGraveyard() const {
+  for (std::size_t b = 0; b < buildings.size(); ++b)
+    if (buildings[b].type == BuildingType::Graveyard && buildings[b].stage == 3)
+      return static_cast<int>(b);
+  return -1;
+}
+
+bool Village::buryBody(World& world, int propIdx) {
+  Prop& body = world.props[propIdx];
+  if (!body.alive || body.type != PropType::Body) return false;
+  int g = completedGraveyard();
+  if (g < 0) return false;
+  if (glm::distance(xz(buildings[g].pos), xz(body.pos)) > 6.0f) return false;
+  body.alive = false;
+  body.held = false;
+  body.carrier = -1;
+  body.claimedBy = -1;
+  ++buildings[g].charges;  // a fresh grave (rendered as headstones)
+  ++burials;
+  belief = std::min(1.0f, belief + tune::kBurialBelief);  // dignity matters
+  return true;
+}
+
 int Village::housingCapacity() const {
   int cap = 0;
   for (const Building& b : buildings) {
@@ -369,9 +406,9 @@ void Village::onBuildingComplete(World& world, int buildingIdx) {
   switch (b.type) {
     case BuildingType::House:
     case BuildingType::LargeAbode:
-      // Home the homeless in the new beds.
+      // Home the (living) homeless in the new beds.
       for (std::size_t o = 0; o < villagers.size(); ++o)
-        if (villagers[o].home < 0)
+        if (villagers[o].alive && villagers[o].home < 0)
           villagers[o].home = findHomeFor(static_cast<int>(o));
       break;
     case BuildingType::FieldSite: {
@@ -442,7 +479,7 @@ void Village::notifyDivineEvent(const glm::vec3& where, float fear, float awe) {
   // witnesses, and belief rises by how much of the village saw it.
   int witnesses = 0;
   for (Villager& v : villagers) {
-    if (v.inside) continue;
+    if (v.inside || !v.alive) continue;
     float d = glm::distance(xz(v.pos), xz(where));
     if (d < 30.0f) {
       ++witnesses;
@@ -465,7 +502,8 @@ float Village::influenceRadius() const {
 int Village::activeWorshippers() const {
   int n = 0;
   for (const Villager& v : villagers)
-    if (v.job == Job::Worshipper && v.state == VState::Work && !v.inside) ++n;
+    if (v.alive && v.job == Job::Worshipper && v.state == VState::Work && !v.inside)
+      ++n;
   return n;
 }
 

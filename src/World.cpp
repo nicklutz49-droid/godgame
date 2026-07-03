@@ -17,7 +17,7 @@ using noise::XorShift;
 
 bool propFloats(PropType t) {
   return t == PropType::Tree || t == PropType::Log || t == PropType::Food ||
-         t == PropType::Scaffold;
+         t == PropType::Scaffold || t == PropType::Body;
 }
 
 }  // namespace
@@ -147,6 +147,8 @@ float World::restHeight(const Prop& p) const {
       return ground + 0.35f * p.scale;
     case PropType::Scaffold:
       return ground + 0.68f * p.scale;  // lattice cube sits on its base
+    case PropType::Body:
+      return ground + 0.20f * p.scale;  // lying flat
     default:
       return ground + p.radius * 0.55f;
   }
@@ -238,6 +240,7 @@ void World::update(float dt) {
 
   for (std::size_t idx = 0; idx < props.size(); ++idx) {
     Prop& p = props[idx];
+    if (p.alive) p.age += dt;  // bodies rot; everything else doesn't mind
     if (!p.alive || p.held || p.carrier >= 0) continue;
 
     // Fallen trees slowly right themselves and replant (never felled ones).

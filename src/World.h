@@ -17,7 +17,7 @@ enum class PropType : std::uint8_t {
   Food,     // meal bundle (grain/fish), haulable, floats
   Stump,    // what remains of a chopped tree
   Scaffold, // crafted at workshops; resource = stack count (1..7); floats
-  // reserved: Body - mortality slice (corpses are just grabbable props)
+  Body,     // a dead villager; carry it to the graveyard (it floats, grimly)
 };
 
 // A physical object the hand can pick up and throw. Collision against the
@@ -44,6 +44,7 @@ struct Prop {
   bool felled = false;   // chopped tree: falls for real and must not replant
   float restTimer = 0.0f;
   float resource = 0.0f; // trees: chop work remaining; food: meals it grants
+  float age = 0.0f;      // seconds since spawn (bodies rot past kCorpseRotDays)
   int claimedBy = -1;    // villager index working this prop
   int carrier = -1;      // villager index carrying this prop
 };

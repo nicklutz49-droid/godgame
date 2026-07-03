@@ -43,9 +43,12 @@ for SDL2/glm when system packages are missing — don't add hard system deps.
 - Sim-time quantities that should survive day-length changes (needs, crop
   growth, child growth) advance in day-fraction units; walking/working act in
   real seconds. Headless soaks shrink `DayCycle::secondsPerDay`.
-- Villagers are invulnerable this slice. Every future death must flow through
-  `applyLanding` / the starvation clamp / `submergedTime` (the marked
-  MORTALITY SEAMs) — do not add ad-hoc kill paths.
+- Mortality is live (M2): every death flows through `villagerKill` reached
+  only via the three seams — `applyLanding` (impact), `submergedTime`
+  (drowning), the starvation timer. Never add ad-hoc kill paths. Held
+  villagers cannot die (the divine grip preserves). Dead villagers keep their
+  slot (`alive=false`) — indices stay stable like props and buildings; every
+  villager loop must guard on `alive`.
 - Props are never erased: consumed props set `alive=false` and slots are
   reused by `World::spawnProp`. Holders (hand, villagers) re-validate on use.
 - Buildings are never erased either (villager targets hold indices); dead

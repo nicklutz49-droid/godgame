@@ -71,13 +71,16 @@ struct Villager {
   int targetCell = -1;              // farm cell
   int home = -1;                    // building index; -1 = homeless (campfire)
 
+  bool alive = true;                // dead villagers keep their slot (indices
+                                    // stay stable, like props and buildings)
   bool held = false;                // in the divine hand
   bool inside = false;              // sleeping inside the home (not rendered)
   bool pendingAssign = false;       // gently placed: resolve job on landing
   bool wasThrown = false;           // panic on recovery
 
   float stun = 0.0f;
-  float submergedTime = 0.0f;       // maintained now; drowning reads it later
+  float submergedTime = 0.0f;       // drowning triggers past kDrownSeconds
+  float starveTimer = 0.0f;         // day-fractions spent at hunger 1.0
   float progressTimer = 0.0f;       // stuck watchdog
   glm::vec2 lastProgressPos{0.0f};
 

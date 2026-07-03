@@ -172,6 +172,10 @@ void Hand::release(World& world) {
       world.village.absorbProp(world, idx);
       world.village.notifyDivineEvent(p.pos, 0.0f, tune::kAweGift);
     }
+    // The god personally laying a body to rest at the graveyard buries it.
+    if (gentle && p.type == PropType::Body && world.village.founded) {
+      world.village.buryBody(world, idx);
+    }
   }
 
   held.clear();

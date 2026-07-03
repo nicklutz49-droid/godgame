@@ -75,6 +75,8 @@ class Village {
   int mealsEaten = 0;
   int stuckEvents = 0;
   int scaffoldsCrafted = 0;
+  int deaths = 0;
+  int burials = 0;
 
   std::vector<Building> buildings;
   std::vector<Field> fields;
@@ -103,7 +105,13 @@ class Village {
   bool insideFootprint(float x, float z) const;  // prop-scatter keep-out
   bool insideAnyField(float x, float z, float margin) const;
   int housingCapacity() const;
-  int population() const { return static_cast<int>(villagers.size()); }
+  int population() const;  // the living only
+
+  // Lay a body to rest: consumes the prop, digs a grave at the (completed)
+  // graveyard, restores a little belief. Returns false without a graveyard
+  // in range.
+  bool buryBody(World& world, int propIdx);
+  int completedGraveyard() const;  // building index or -1
 
   // Storage caps (base + completed Stores). Deposits pause when full.
   int foodCap() const;

@@ -110,9 +110,16 @@ inline constexpr float kVillageInfluenceScale = 90.0f;  // + belief * this
 inline constexpr float kFoodMiracleCost = 30.0f;
 inline constexpr int kFoodMiracleBundles = 4;
 
-// --- mortality seam (this slice: invulnerable) ---
-inline constexpr bool kVillagersInvulnerable = true;
-inline constexpr float kLethalImpactSpeed = 26.0f;  // unused while invulnerable
+// --- mortality (M2: the seams are live) ---
+inline constexpr bool kVillagersInvulnerable = false;
+inline constexpr float kLethalImpactSpeed = 26.0f;  // impact above this kills
+inline constexpr float kDrownSeconds = 16.0f;       // swimming this long kills
+inline constexpr float kStarveDays = 1.5f;          // at hunger 1.0, unfed
+inline constexpr float kBurySeconds = 3.0f;
+inline constexpr float kBurialBelief = 0.02f;       // dignity restores faith
+inline constexpr float kBeliefDeathPenalty = 0.02f; // every death shakes it
+inline constexpr float kCorpseRotDays = 1.0f;       // unburied after this: rot
+inline constexpr float kCorpseBeliefPerDay = 0.06f; // rotting corpse nearby
 inline constexpr float kVillagerRestitution = 0.05f;
 
 }  // namespace tune

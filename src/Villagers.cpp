@@ -67,6 +67,41 @@ void goEat(World& w, Villager& v) {
   v.moveTarget = xz(w.village.storagePos());
 }
 
+enum class DeathCause { Impact, Drowned, Starved };
+
+// THE death funnel: every villager death flows through here (impact landings,
+// drowning, starvation). Never called while held - the divine grip preserves.
+void villagerKill(World& w, int idx, DeathCause cause) {
+  Villager& v = w.village.villagers[idx];
+  if (!v.alive) return;
+  dropCargo(w, v);
+  releaseClaims(w, v, idx);
+  v.alive = false;
+  v.held = false;
+  v.inside = false;
+  v.state = VState::Idle;
+  w.village.onVillagerDeath(idx);  // frees the bed
+  ++w.village.deaths;
+
+  // The body: a real prop, carryable to the graveyard (it floats, grimly).
+  Prop body;
+  body.type = PropType::Body;
+  body.variant = v.variant;
+  body.scale = v.scale;
+  body.radius = 0.6f * v.scale;
+  body.pos = v.pos + glm::vec3(0.0f, 0.3f, 0.0f);
+  body.vel = cause == DeathCause::Impact ? v.vel * 0.3f : glm::vec3(0.0f);
+  body.baseYaw = v.yaw;
+  body.rot = glm::angleAxis(v.yaw, glm::vec3(0, 1, 0));
+  body.asleep = false;
+  w.spawnProp(body);
+
+  // Every death shakes the village's faith, and the sight of it terrifies.
+  w.village.belief = std::max(tune::kBeliefFloor,
+                              w.village.belief - tune::kBeliefDeathPenalty);
+  w.village.notifyDivineEvent(v.pos, 0.85f, 0.0f);
+}
+
 void goHome(World& w, Villager& v) {
   v.state = VState::GoHome;
   glm::vec3 t = v.home >= 0 ? doorPos(w.village.buildings[v.home])
@@ -364,8 +399,11 @@ void arriveAtTarget(World& w, int i) {
       }
       break;
     case VState::Haul:
-      v.state = VState::Work;  // deposit
-      v.workTimer = tune::kDepositSeconds;
+      v.state = VState::Work;  // deposit (or dig, for a burial)
+      v.workTimer = (v.carriedProp >= 0 &&
+                     w.props[v.carriedProp].type == PropType::Body)
+                        ? tune::kBurySeconds
+                        : tune::kDepositSeconds;
       break;
     case VState::GoTo: {
       // What we start doing depends on what we walked to.
@@ -426,6 +464,21 @@ void arriveAtTarget(World& w, int i) {
 void workCycleComplete(World& w, int i) {
   Villager& v = w.village.villagers[i];
 
+  // Burial: the carried body is laid to rest at the graveyard.
+  if (v.carriedProp >= 0 && w.props[v.carriedProp].type == PropType::Body) {
+    int body = v.carriedProp;
+    w.props[body].carrier = -1;
+    v.carriedProp = -1;
+    if (!w.village.buryBody(w, body)) {
+      // Graveyard gone or out of range: set the body down respectfully.
+      w.props[body].asleep = false;
+    }
+    v.state = VState::Idle;
+    v.stateTimer = 0.6f;
+    v.thinkTimer = std::min(v.thinkTimer, 0.2f);
+    return;
+  }
+
   // Deposit at the storage pad (forester/farmer/fisherman hauling).
   if (v.state == VState::Work && v.carriedProp >= 0 &&
       w.village.inStorageRadius(v.pos) &&
@@ -443,14 +496,21 @@ void workCycleComplete(World& w, int i) {
   // Job-specific work.
   if (v.targetProp >= 0) {
     Prop& p = w.props[v.targetProp];
-    if (p.type == PropType::Log || p.type == PropType::Food) {
-      // Shoulder it and head for the pile.
+    if (p.type == PropType::Log || p.type == PropType::Food ||
+        p.type == PropType::Body) {
+      // Shoulder it: resources head for the pile, the dead for the graveyard.
       p.carrier = i;
       p.claimedBy = -1;
       v.carriedProp = v.targetProp;
       v.targetProp = -1;
       v.state = VState::Haul;
-      v.moveTarget = xz(w.village.storagePos());
+      if (p.type == PropType::Body) {
+        int g = w.village.completedGraveyard();
+        v.moveTarget = g >= 0 ? xz(w.village.buildings[g].pos)
+                              : xz(w.village.storagePos());
+      } else {
+        v.moveTarget = xz(w.village.storagePos());
+      }
       return;
     }
     if (p.type == PropType::Tree) {
@@ -580,16 +640,12 @@ void workCycleComplete(World& w, int i) {
   v.stateTimer = 0.4f;
 }
 
-// THE mortality seam: every hard contact funnels through this one function.
+// Every hard contact funnels through this one function.
 void applyLanding(World& w, int i, float impact) {
   Villager& v = w.village.villagers[i];
-  if constexpr (!tune::kVillagersInvulnerable) {
-    if (impact > tune::kLethalImpactSpeed) {
-      // kill(w, i, Cause::Impact) - the mortality slice implements this;
-      // Village::onVillagerDeath already frees the bed.
-      w.village.onVillagerDeath(i);
-      return;
-    }
+  if (!tune::kVillagersInvulnerable && impact > tune::kLethalImpactSpeed) {
+    villagerKill(w, i, DeathCause::Impact);
+    return;
   }
   v.rot = glm::quat(1, 0, 0, 0);
   v.angVel = glm::vec3(0.0f);
@@ -788,7 +844,24 @@ void think(World& w, int i) {
     return;
   }
 
-  // (Reserved rung: WORSHIP - the belief slice slots in exactly here.)
+  // Rung 5: the dead must be buried. Any adult at a task boundary carries a
+  // body to the graveyard (if one stands).
+  if (v.scale > 0.9f && v.carriedProp < 0 &&
+      (v.state == VState::Idle || v.state == VState::Wander ||
+       v.state == VState::Chat) &&
+      w.village.completedGraveyard() >= 0) {
+    int body = nearestProp(w, v, i,
+                           [](const Prop& p) { return p.type == PropType::Body; });
+    if (body >= 0) {
+      w.props[body].claimedBy = i;
+      v.targetProp = body;
+      v.state = VState::GoTo;
+      v.moveTarget = xz(w.props[body].pos);
+      return;
+    }
+  }
+
+  // (Reserved rung: scheduled communal WORSHIP slots in exactly here.)
 
   // Rung 6: the job.
   if (v.job != Job::None && v.scale > 0.9f) {  // children don't work yet
@@ -823,7 +896,7 @@ void think(World& w, int i) {
       for (std::size_t o = 0; o < w.village.villagers.size(); ++o) {
         if (static_cast<int>(o) == i) continue;
         Villager& u = w.village.villagers[o];
-        if (u.state != VState::Idle || u.inside || u.held) continue;
+        if (!u.alive || u.state != VState::Idle || u.inside || u.held) continue;
         if (glm::distance(xz(u.pos), xz(v.pos)) < 9.0f) {
           partner = static_cast<int>(o);
           break;
@@ -860,19 +933,31 @@ void villagersUpdate(World& world, float dt) {
 
   for (int i = 0; i < static_cast<int>(vs.size()); ++i) {
     Villager& v = vs[i];
+    if (!v.alive) continue;  // the dead keep their slot, nothing more
 
     // Children grow.
     if (v.scale < 1.0f)
       v.scale = std::min(1.0f, v.scale + dayFrac * (1.0f - tune::kChildScale) /
                                              tune::kChildGrowDays);
 
-    // Needs. Dancing for a god is hard work. (MORTALITY SEAM: starvation
-    // death later replaces the 1.0 clamp.)
+    // Needs. Dancing for a god is hard work.
     bool sleeping = v.state == VState::Sleep;
     bool worshipping = v.job == Job::Worshipper && v.state == VState::Work;
     if (v.state != VState::Eat)
       v.hunger = std::min(1.0f, v.hunger + tune::kHungerPerDay * dayFrac *
                                     (worshipping ? tune::kWorshipHungerFactor : 1.0f));
+
+    // Starvation: pinned at 1.0 with nothing to eat, a villager wastes away.
+    // (Held villagers are preserved by the divine grip.)
+    if (!tune::kVillagersInvulnerable && v.hunger >= 0.999f && !v.held) {
+      v.starveTimer += dayFrac;
+      if (v.starveTimer > tune::kStarveDays) {
+        villagerKill(world, i, DeathCause::Starved);
+        continue;
+      }
+    } else {
+      v.starveTimer = std::max(0.0f, v.starveTimer - dayFrac * 2.0f);
+    }
     if (sleeping)
       v.energy = std::min(1.0f, v.energy + tune::kEnergyRestorePerDay * dayFrac);
     else
@@ -983,8 +1068,12 @@ void villagersUpdate(World& world, float dt) {
         break;
       }
       case VState::Swim: {
-        // MORTALITY SEAM: drowning later reads submergedTime right here.
         v.submergedTime += dt;
+        if (!tune::kVillagersInvulnerable &&
+            v.submergedTime > tune::kDrownSeconds) {
+          villagerKill(world, i, DeathCause::Drowned);
+          break;
+        }
         float targetY = Terrain::WATER_LEVEL - 1.15f * v.scale;
         v.pos.y += (targetY - v.pos.y) * std::min(1.0f, 4.0f * dt);
         glm::vec2 to = xz(world.village.center) - xz(v.pos);
@@ -1101,6 +1190,8 @@ void villagersUpdate(World& world, float dt) {
               v.targetBuilding = -1;
               world.village.onBuildingComplete(world, done);
             }
+            // (onBuildingComplete homes only the living - the dead keep
+            // no beds.)
           }
         }
         if (v.state == VState::Work && v.workTimer <= 0.0f)
@@ -1141,7 +1232,7 @@ void villagersUpdate(World& world, float dt) {
       for (std::size_t o = 0; o < vs.size(); ++o) {
         if (static_cast<int>(o) == i) continue;
         Villager& u = vs[o];
-        if (u.inside || u.held) continue;
+        if (!u.alive || u.inside || u.held) continue;
         glm::vec2 d = xz(v.pos) - xz(u.pos);
         float dd = glm::dot(d, d);
         if (dd > 0.0001f && dd < 1.1f * 1.1f) {
@@ -1203,7 +1294,7 @@ GrabTarget pickTarget(const World& world, const glm::vec3& origin,
 
   for (std::size_t i = 0; i < world.village.villagers.size(); ++i) {
     const Villager& v = world.village.villagers[i];
-    if (v.held || v.inside) continue;
+    if (!v.alive || v.held || v.inside) continue;
     glm::vec3 center = v.pos + glm::vec3(0, 0.95f * v.scale, 0);
     float r = 1.05f * v.scale;
     glm::vec3 oc = origin - center;

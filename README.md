@@ -10,7 +10,24 @@ screen is procedural placeholder art. There is no creature, by design.
 ![The temple](docs/temple.png)
 ![The island](docs/island.png)
 
-## Current slice: scaffolds & the buildable village
+## Current slice: mortality & burial
+
+Villagers can now die — and the dead demand dignity:
+
+- **Three ways to go**: impacts above ~26 m/s (a hard throw or a long fall),
+  drowning (~16 s of open-water swimming), and starvation (a day and a half
+  at an empty larder). Gentle handling stays perfectly safe, and a villager
+  held in the hand cannot die — the divine grip preserves.
+- **Bodies are props**: they fall, float (grimly), and can be carried — by
+  villagers or by you.
+- **Burial**: with a Graveyard built, villagers drop what they're doing at
+  the next task boundary to carry the dead there; a grave is dug (stone
+  cairns accumulate) and belief mends a little. You can also lay a body to
+  rest yourself. Corpses left rotting near the village drain belief instead.
+- Every death costs belief and terrifies witnesses. Population is now a real
+  resource: Crèche births against deaths, beds freed by the fallen.
+
+## Previous slice: scaffolds & the buildable village
 
 The growth engine from [docs/plan-game.md](docs/plan-game.md) (slice plan:
 [docs/plan-scaffolds.md](docs/plan-scaffolds.md)) — wood becomes scaffolds

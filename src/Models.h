@@ -43,6 +43,7 @@ MeshData logProp();
 MeshData foodBundleProp();
 MeshData stumpProp();
 MeshData scaffoldProp();  // one lattice unit; stacks draw it repeatedly
+MeshData bodyProp(int variant);  // a villager at rest, forever
 
 // Thought bubbles (emissive billboards above heads).
 MeshData bubbleHunger();

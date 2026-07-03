@@ -369,6 +369,20 @@ MeshData scaffoldProp() {
   return md;
 }
 
+MeshData bodyProp(int variant) {
+  static const glm::vec3 skins[3] = {
+      {0.80f, 0.62f, 0.48f}, {0.68f, 0.50f, 0.37f}, {0.85f, 0.68f, 0.55f}};
+  MeshData md;  // lying on its back along +Z, origin at the ground
+  const glm::vec3 tunic(0.72f, 0.70f, 0.66f);
+  md.addBox(at(0.0f, 0.18f, 0.05f), {0.24f, 0.14f, 0.34f}, tunic);       // torso
+  md.addBox(at(0.0f, 0.16f, 0.55f), {0.14f, 0.14f, 0.15f}, skins[variant % 3]);
+  md.addBox(at(-0.33f, 0.12f, 0.10f), {0.075f, 0.08f, 0.29f}, skins[variant % 3]);
+  md.addBox(at(0.33f, 0.12f, 0.10f), {0.075f, 0.08f, 0.29f}, skins[variant % 3]);
+  md.addBox(at(-0.12f, 0.12f, -0.62f), {0.09f, 0.10f, 0.35f}, glm::vec3(0.30f, 0.25f, 0.20f));
+  md.addBox(at(0.12f, 0.12f, -0.62f), {0.09f, 0.10f, 0.35f}, glm::vec3(0.30f, 0.25f, 0.20f));
+  return md;
+}
+
 // ------------------------------------------------------------ thought bubbles
 
 MeshData bubbleHunger() {

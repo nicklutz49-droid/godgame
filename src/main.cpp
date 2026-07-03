@@ -268,6 +268,7 @@ struct App {
   Mesh templeRing, villageRing;
   Mesh largeAbodeMesh, workshopMesh, storeMesh, crecheMesh, graveyardMesh;
   Mesh dispenserMesh, wonderMesh, scaffoldMesh;
+  Mesh bodyMeshes[3];
   float lastVillageRingR = -1.0f;
 
   // Short-lived cast feedback (expanding gold pulse at miracle points).
@@ -413,6 +414,7 @@ void App::initScene() {
   dispenserMesh.upload(models::dispenser());
   wonderMesh.upload(models::wonder());
   scaffoldMesh.upload(models::scaffoldProp());
+  for (int v = 0; v < 3; ++v) bodyMeshes[v].upload(models::bodyProp(v));
 
   rebuildWorld(seed);
 }
@@ -755,6 +757,17 @@ void App::render(float time) {
         }
         break;
       }
+      case PropType::Body: {
+        // The dead grey as they rot; burial is overdue when they look it.
+        float rot = std::clamp(
+            p.age / (tune::kCorpseRotDays * world.dayCycle.secondsPerDay), 0.0f,
+            1.0f);
+        lit.set("uTint", glm::mix(glm::vec3(1.0f), glm::vec3(0.52f, 0.56f, 0.48f),
+                                  rot * 0.8f));
+        bodyMeshes[p.variant % 3].draw();
+        lit.set("uTint", glm::vec3(1.0f));
+        break;
+      }
     }
     if (mesh) mesh->draw();
   }
@@ -790,6 +803,20 @@ void App::render(float time) {
         if (bd.stage >= 3) {
           const Mesh* m = buildingMesh(bd.type);
           if (m) m->draw();
+          // Graves accumulate as little stone cairns.
+          if (bd.type == BuildingType::Graveyard && bd.charges > 0) {
+            static const glm::vec2 kGraveSpots[8] = {
+                {-1.4f, -1.2f}, {0.2f, -0.9f}, {1.5f, -1.4f}, {-0.9f, 0.2f},
+                {1.2f, 0.6f},   {-1.6f, 1.3f}, {0.3f, 1.5f},  {1.7f, 1.6f}};
+            for (int g = 0; g < std::min(bd.charges, 8); ++g) {
+              lit.set("uModel",
+                      model * glm::translate(glm::mat4(1.0f),
+                                             glm::vec3(kGraveSpots[g].x, 0.15f,
+                                                       kGraveSpots[g].y)) *
+                          glm::scale(glm::mat4(1.0f), glm::vec3(0.30f)));
+              rockMeshes[g % 3].draw();
+            }
+          }
         } else if (bd.tier > 0) {
           // Under construction: the scaffold stack stands at the site.
           for (int k = 0; k < bd.tier; ++k) {
@@ -860,7 +887,7 @@ void App::render(float time) {
   // Villagers: six posed parts each, two at distance.
   for (std::size_t i = 0; i < vil.villagers.size(); ++i) {
     const Villager& v = vil.villagers[i];
-    if (v.inside) continue;
+    if (!v.alive || v.inside) continue;
     VillagerPose pose = computeVillagerPose(v, time);
     glm::mat4 root = glm::translate(glm::mat4(1.0f), v.pos) * pose.root;
     bool farAway = glm::distance(camPos, v.pos) > 180.0f;
@@ -914,7 +941,7 @@ void App::render(float time) {
     shadowDisc.draw();
   }
   for (const Villager& v : vil.villagers) {
-    if (!(v.held || v.state == VState::Airborne)) continue;
+    if (!v.alive || !(v.held || v.state == VState::Airborne)) continue;
     float ground = world.terrain.heightAt(v.pos.x, v.pos.z);
     if (ground < Terrain::WATER_LEVEL - 0.2f) continue;
     if (v.pos.y - ground < 0.2f) continue;
@@ -928,7 +955,7 @@ void App::render(float time) {
   // Thought bubbles: needs and fear, yaw-billboarded.
   for (std::size_t i = 0; i < vil.villagers.size(); ++i) {
     const Villager& v = vil.villagers[i];
-    if (v.inside) continue;
+    if (!v.alive || v.inside) continue;
     const Mesh* bubble = nullptr;
     if (v.state == VState::Panic || v.state == VState::Cower || v.held ||
         v.state == VState::Airborne)
@@ -1193,7 +1220,17 @@ int App::runScreenshot(const std::string& path, int frames, const std::string& v
       b.stage = 3;
       b.tier = 1;
       if (b.type == BuildingType::Dispenser) b.charges = 2;
+      if (b.type == BuildingType::Graveyard) b.charges = 3;  // dug graves
       v.buildings.push_back(b);
+      if (b.type == BuildingType::Graveyard) {
+        Prop body;  // one poor soul awaiting burial beside the plot
+        body.type = PropType::Body;
+        body.variant = 1;
+        body.pos = b.pos + glm::vec3(3.5f, 1.0f, 1.0f);
+        body.asleep = false;
+        body.radius = 0.6f;
+        world.spawnProp(body);
+      }
     }
     for (int k = 0; k < 3; ++k) {
       Prop s;
@@ -1265,8 +1302,10 @@ std::uint64_t worldChecksum(const World& w) {
     addF(v.pos.z);
     addF(v.hunger);
     int s = static_cast<int>(v.state), j = static_cast<int>(v.job);
+    int a = v.alive ? 1 : 0;
     h = fnvMix(h, &s, sizeof s);
     h = fnvMix(h, &j, sizeof j);
+    h = fnvMix(h, &a, sizeof a);
   }
   int counters[3] = {w.village.wood, w.village.food, w.village.population()};
   h = fnvMix(h, counters, sizeof counters);
@@ -1342,13 +1381,13 @@ int runHeadless(std::uint32_t seed, int steps) {
     check(finite && travelled > 5.0f && rock.asleep, "flies, lands, sleeps");
   }
 
-  // [3] Hand script: throw a villager hard - flail, stun, panic, recover.
-  //     Villagers are invulnerable this slice; this test flips when mortality lands.
+  // [3] Hand script: throw a villager - flail, stun, panic, recover; and the
+  //     mortality tripwire, flipped as designed: maximum violence now kills.
   std::printf("[3] thrown villager\n");
   {
     Villager& v = vil.villagers[0];
-    v.pos = vil.center + glm::vec3(0.0f, 14.0f, 0.0f);
-    villagerReleased(world, 0, glm::vec3(24.0f, 6.0f, 13.0f), false);
+    v.pos = vil.center + glm::vec3(0.0f, 5.0f, 0.0f);  // stun range, not lethal
+    villagerReleased(world, 0, glm::vec3(14.0f, 2.0f, 8.0f), false);
     bool sawAirborne = false, sawStunned = false, sawRecovered = false;
     for (int i = 0; i < 3000 && !sawRecovered; ++i) {
       world.update(dt);
@@ -1365,12 +1404,17 @@ int runHeadless(std::uint32_t seed, int steps) {
     check(sawStunned, "hard landing stunned");
     check(sawRecovered, "got up and recovered");
     check(finite, "position stayed finite");
-    // Maximum violence, still alive (the invulnerability tripwire).
+    check(v0.alive, "a stunning throw is survivable");
+    // Maximum violence: the old invulnerability test, now asserting death.
+    int deathsBefore = vil.deaths;
     vil.villagers[0].pos = vil.center + glm::vec3(0.0f, 60.0f, 0.0f);
     villagerReleased(world, 0, glm::vec3(65.0f, 0.0f, 0.0f), false);
-    for (int i = 0; i < 3000; ++i) world.update(dt);
-    const Villager& v1 = vil.villagers[0];
-    check(std::isfinite(v1.pos.x) && std::isfinite(v1.pos.y), "survived 65 m/s (invulnerable)");
+    for (int i = 0; i < 1200 && vil.deaths == deathsBefore; ++i) world.update(dt);
+    check(!vil.villagers[0].alive, "a 65 m/s impact kills");
+    int bodies = 0;
+    for (const Prop& p : world.props)
+      if (p.alive && p.type == PropType::Body) ++bodies;
+    check(bodies >= 1, "a body remains");
   }
 
   // [4] Drop-to-assign resolution rules.
@@ -1646,6 +1690,109 @@ int runHeadless(std::uint32_t seed, int steps) {
     check(!w4.scaffoldPlacementValid(w4.temple.pos, 1), "placement on the temple refused");
   }
 
+  // [10] Mortality & burial: the Graveyard earns its headstones.
+  std::printf("[10] mortality & burial\n");
+  {
+    // -- impact death, then the village buries its dead --
+    World w5;
+    w5.generate(seed);
+    w5.dayCycle.t = 0.45f;
+    w5.dayCycle.secondsPerDay = 1.0e6f;  // frozen noon isolates the mechanics
+    Village& v5 = w5.village;
+
+    auto spawnStack = [&](World& w, glm::vec3 pos, int count) {
+      Prop s;
+      s.type = PropType::Scaffold;
+      s.resource = static_cast<float>(count);
+      s.radius = 1.0f;
+      s.pos = pos;
+      s.pos.y = w.terrain.heightAt(pos.x, pos.z) + 0.7f;
+      s.asleep = true;
+      return w.spawnProp(s);
+    };
+    auto buildAt = [&](World& w, int count, BuildingType civic) {
+      for (float r = 22.0f; r < tune::kBuildPlacementRange; r += 4.0f)
+        for (float a = 0.0f; a < 6.28f; a += 0.3f) {
+          glm::vec3 p = w.village.center +
+                        glm::vec3(std::sin(a) * r, 0.0f, std::cos(a) * r);
+          p.y = w.terrain.heightAt(p.x, p.z);
+          if (w.scaffoldPlacementValid(p, count)) {
+            int idx = spawnStack(w, p, count);
+            if (w.tryPlaceScaffold(idx, civic)) {
+              int nb = static_cast<int>(w.village.buildings.size()) - 1;
+              w.village.onBuildingComplete(w, nb);
+              return nb;
+            }
+          }
+        }
+      return -1;
+    };
+    int graveyardIdx = buildAt(w5, 3, BuildingType::Graveyard);
+    check(graveyardIdx >= 0, "a graveyard stands");
+
+    int popBefore = v5.population();
+    v5.villagers[5].pos = v5.center + glm::vec3(6.0f, 40.0f, 6.0f);
+    villagerReleased(w5, 5, glm::vec3(10.0f, -20.0f, 5.0f), false);
+    for (int i = 0; i < 1200 && v5.deaths == 0; ++i) w5.update(dt);
+    check(v5.deaths == 1, "a hard fall killed");
+    check(!v5.villagers[5].alive, "the villager is gone");
+    check(v5.population() == popBefore - 1, "population fell");
+    auto countBodies = [](const World& w) {
+      int n = 0;
+      for (const Prop& p : w.props)
+        if (p.alive && p.type == PropType::Body) ++n;
+      return n;
+    };
+    check(countBodies(w5) == 1, "a body lies in the world");
+
+    bool buried = false;
+    for (int i = 0; i < 36000 && !buried; ++i) {
+      w5.update(dt);
+      buried = v5.burials > 0;
+    }
+    check(buried, "the village buried its dead");
+    check(v5.buildings[graveyardIdx].charges == 1, "a grave was dug");
+    check(countBodies(w5) == 0, "the body was laid to rest");
+
+    // -- drowning: thrown far out to sea, too far to swim home --
+    World w6;
+    w6.generate(seed);
+    w6.dayCycle.t = 0.45f;
+    w6.dayCycle.secondsPerDay = 1.0e6f;
+    Village& v6 = w6.village;
+    glm::vec3 spot = v6.fishingSpots.empty() ? v6.center : v6.fishingSpots[0];
+    glm::vec3 out = glm::normalize(
+        glm::vec3(spot.x - v6.center.x, 0.0f, spot.z - v6.center.z) +
+        glm::vec3(0.001f, 0.0f, 0.0f));
+    glm::vec3 deepPoint = spot;
+    for (float d = 4.0f; d < 160.0f; d += 4.0f) {
+      glm::vec3 p = spot + out * d;
+      if (w6.terrain.heightAt(p.x, p.z) < -6.0f) {
+        deepPoint = p + out * 30.0f;  // beyond a 16 s swim home
+        break;
+      }
+    }
+    v6.villagers[6].pos = deepPoint + glm::vec3(0.0f, 3.0f, 0.0f);
+    villagerReleased(w6, 6, glm::vec3(0.0f), false);
+    for (int i = 0; i < 2400 && v6.deaths == 0; ++i) w6.update(dt);
+    check(v6.deaths == 1 && !v6.villagers[6].alive, "too far from shore: drowned");
+    bool bodyFloats = false;
+    for (const Prop& p : w6.props)
+      if (p.alive && p.type == PropType::Body && p.pos.y > -2.0f) bodyFloats = true;
+    check(bodyFloats, "the body floats");
+
+    // -- starvation: an empty larder eventually kills --
+    World w7;
+    w7.generate(seed);
+    w7.dayCycle.secondsPerDay = 60.0f;
+    for (int i = 0; i < 16000 && w7.village.deaths == 0; ++i) {
+      w7.village.food = 0;  // an enforced famine
+      w7.update(dt);
+    }
+    check(w7.village.deaths >= 1, "famine starves");
+    check(countBodies(w7) >= 1, "starvation leaves a body");
+  }
+
   // [6] Three-day economy & schedule soak. Days are shrunk to 240 s - short
   // enough to simulate fast, long enough that walking/chopping (real-time
   // actions) still fit inside a work day.
@@ -1691,11 +1838,12 @@ int runHeadless(std::uint32_t seed, int steps) {
       if (b.type == BuildingType::House && b.stage == 3) ++stage3Houses;
     std::printf(
         "      wood %d (produced %d) | food %d (produced %d, eaten %d) | pop %d | "
-        "houses %d | scaffolds %d | stuck %d | midnight asleep %.0f%% | "
+        "houses %d | scaffolds %d | deaths %d | stuck %d | midnight asleep %.0f%% | "
         "noon active %.0f%% | mana %.0f | belief %.2f\n",
         v2.wood, v2.woodProduced, v2.food, v2.foodProduced, v2.mealsEaten,
-        v2.population(), stage3Houses, v2.scaffoldsCrafted, v2.stuckEvents,
+        v2.population(), stage3Houses, v2.scaffoldsCrafted, v2.deaths, v2.stuckEvents,
         midnightSleep * 100.0f, noonActive * 100.0f, w2.temple.mana, v2.belief);
+    check(v2.deaths == 0, "a healthy village loses nobody");
     check(w2.temple.mana > tune::kManaStart, "worship filled the mana pool");
     check(finite, "all positions finite");
     check(inBounds, "everyone stayed on the island");
