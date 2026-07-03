@@ -10,7 +10,26 @@ screen is procedural placeholder art. There is no creature, by design.
 ![The temple](docs/temple.png)
 ![The island](docs/island.png)
 
-## Current slice: mortality & burial
+## Current slice: many villages
+
+The strategic map exists. Every island now founds the player's home village
+**plus neutral villages** on the best remaining sites (separated by 130 m+),
+each running the same autonomous simulation — gathering, farming, building,
+sleeping, raising children — with no god over them:
+
+- **Neutral villages** have no Worshipper and generate no mana; their belief
+  in you starts near zero. They sit outside your influence rings — visible,
+  self-sufficient, and unreachable until your reach grows. (Conversion — the
+  ratchet that wins them over — is the next slice.)
+- **Witness routing**: every divine act now reaches whichever village saw
+  it. Impress a neutral village's people and *their* belief in you rises.
+- **Per-village everything**: stores, fields, claims, burials, births,
+  economy counters. Prop claims are packed cross-village ids; villages and
+  their villagers keep stable indices forever.
+- **Spatial obstacle grid** for steering — cost per villager no longer scales
+  with the island's prop count, ready for the crowds ahead.
+
+## Previous slice: mortality & burial
 
 Villagers can now die — and the dead demand dignity:
 

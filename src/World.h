@@ -68,9 +68,14 @@ class World {
 
   Terrain terrain;
   std::vector<Prop> props;
-  Village village;
+  // villages[0] is the player's home village (owner 0); the rest start
+  // neutral (owner -1). Indices are stable for the whole session.
+  std::vector<Village> villages;
   Temple temple;
   DayCycle dayCycle;
+
+  Village& home() { return villages[0]; }
+  const Village& home() const { return villages[0]; }
 
   // The divine hand, as the sim sees it (set by the app / test harness each
   // frame; villagers react to it). Defaults far away and harmless.
@@ -90,8 +95,27 @@ class World {
   // Reuses a dead slot when possible; returns the prop's index.
   int spawnProp(const Prop& p);
 
-  // Is this point within the god's reach (temple ring or any village ring)?
+  // Is this point within the god's reach (temple ring or any OWNED village's
+  // ring)? Neutral villages project nothing.
   bool insideInfluence(const glm::vec3& p) const;
+
+  // Divine acts ripple to every village whose people can see them.
+  void notifyDivineEvent(const glm::vec3& where, float fear, float awe);
+
+  // Static-obstacle spatial grid (trees/rocks/stumps), rebuilt each update;
+  // steering queries it instead of scanning every prop.
+  void rebuildObstacleGrid();
+  template <typename Fn>
+  void forEachObstacleNear(glm::vec2 p, Fn&& fn) const {
+    int cx = static_cast<int>((p.x + Terrain::SIZE * 0.5f) / kObstacleCell);
+    int cz = static_cast<int>((p.y + Terrain::SIZE * 0.5f) / kObstacleCell);
+    for (int dz = -1; dz <= 1; ++dz)
+      for (int dx = -1; dx <= 1; ++dx) {
+        int x = cx + dx, z = cz + dz;
+        if (x < 0 || z < 0 || x >= kObstacleGridN || z >= kObstacleGridN) continue;
+        for (int idx : obstacleGrid_[z * kObstacleGridN + x]) fn(props[idx]);
+      }
+  }
 
   // Rain food from the sky at p. Fails (returns false) outside influence or
   // with insufficient mana (a charged Miracle Dispenser within range covers
@@ -117,6 +141,14 @@ class World {
  private:
   void foundTemple();
   void scatterProps();
+  std::vector<glm::vec2> findVillageSites(int count) const;
+  int scaffoldHostVillage(const glm::vec3& pos, int count) const;
+
+  static constexpr float kObstacleCell = 8.0f;
+  static constexpr int kObstacleGridN =
+      static_cast<int>(Terrain::SIZE / kObstacleCell) + 1;
+  std::vector<std::vector<int>> obstacleGrid_;
+
   std::uint32_t seed_ = 1;
   std::uint32_t miracleCounter_ = 0;
 };

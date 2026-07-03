@@ -22,23 +22,108 @@ bool propFloats(PropType t) {
 
 }  // namespace
 
+// Score the island for settlement sites; greedily pick the best `count` with
+// a minimum separation. Deterministic. Always returns at least one (the
+// terraform-hard fallback), possibly fewer than asked on hostile islands.
+std::vector<glm::vec2> World::findVillageSites(int count) const {
+  static const glm::vec2 kDirs8[8] = {
+      {1.0f, 0.0f},   {0.70711f, 0.70711f},   {0.0f, 1.0f},   {-0.70711f, 0.70711f},
+      {-1.0f, 0.0f},  {-0.70711f, -0.70711f}, {0.0f, -1.0f},  {0.70711f, -0.70711f}};
+  auto flatnessAt = [&](float x, float z) {
+    float sum = 0.0f;
+    for (int j = -2; j <= 2; ++j)
+      for (int i = -2; i <= 2; ++i)
+        sum += terrain.normalAt(x + static_cast<float>(i) * 6.0f,
+                                z + static_cast<float>(j) * 6.0f).y;
+    return sum / 25.0f;
+  };
+  auto coastDist = [&](float x, float z) {
+    for (float d = 10.0f; d <= 140.0f; d += 10.0f)
+      for (const glm::vec2& dir : kDirs8)
+        if (terrain.heightAt(x + dir.x * d, z + dir.y * d) < 0.0f) return d;
+    return 999.0f;
+  };
+
+  struct Candidate {
+    float score;
+    glm::vec2 pos;
+  };
+  std::vector<Candidate> all;
+  const float lim = Terrain::SIZE * 0.42f;
+  for (float z = -lim; z <= lim; z += 8.0f) {
+    for (float x = -lim; x <= lim; x += 8.0f) {
+      float h = terrain.heightAt(x, z);
+      if (h < 2.5f || h > 14.0f) continue;
+      float flat = flatnessAt(x, z);
+      if (flat < 0.88f) continue;
+      float coast = coastDist(x, z);
+      if (coast > 120.0f) continue;
+      float forest = noise::fbm(x * 0.016f, z * 0.016f, 3, seed_ + 31u);
+      float score = flat * 3.0f + forest * 1.2f + (1.0f - coast / 120.0f) -
+                    std::abs(h - 5.0f) * 0.08f;
+      all.push_back({score, {x, z}});
+    }
+  }
+  // Stable ordering: by score, ties broken by scan order (already the case
+  // since sort is stable only if we make it so - use index tie-break).
+  std::stable_sort(all.begin(), all.end(),
+                   [](const Candidate& a, const Candidate& b) { return a.score > b.score; });
+
+  std::vector<glm::vec2> picked;
+  for (const Candidate& c : all) {
+    if (static_cast<int>(picked.size()) >= count) break;
+    bool clear = true;
+    for (const glm::vec2& p : picked)
+      if (glm::distance(p, c.pos) < tune::kVillageMinSeparation) clear = false;
+    if (clear) picked.push_back(c.pos);
+  }
+
+  if (picked.empty()) {
+    // Hostile island: take the least-bad cell; the caller terraforms hard.
+    Candidate best{-1.0e9f, {0.0f, 0.0f}};
+    for (float z = -lim; z <= lim; z += 8.0f)
+      for (float x = -lim; x <= lim; x += 8.0f) {
+        float h = terrain.heightAt(x, z);
+        float score = (h > 0.5f ? 5.0f - std::abs(h - 6.0f) * 0.3f : h) +
+                      flatnessAt(x, z) * 2.0f;
+        if (score > best.score) best = {score, {x, z}};
+      }
+    picked.push_back(best.pos);
+  }
+  return picked;
+}
+
 void World::generate(std::uint32_t seed) {
   seed_ = seed;
   miracleCounter_ = 0;
   terrain.generate(seed);
-  village = Village{};
-  village.plan(*this, seed);   // flattens the site before the mesh is built
+
+  // Found the player's home village on the best site, neutrals on the rest.
+  std::vector<glm::vec2> sites = findVillageSites(1 + tune::kNeutralVillages);
+  villages.clear();
+  villages.resize(sites.size());
+  for (std::size_t v = 0; v < sites.size(); ++v) {
+    villages[v].owner = v == 0 ? 0 : -1;
+    bool hard = v == 0 && sites.size() == 1 &&
+                terrain.heightAt(sites[0].x, sites[0].y) < 2.5f;
+    villages[v].plan(*this, seed + static_cast<std::uint32_t>(v) * 7919u, sites[v],
+                     hard);
+  }
+
   temple = Temple{};
   foundTemple();               // also flattens; must precede prop scatter
   scatterProps();
-  village.spawnVillagers(*this, seed);
+  for (std::size_t v = 0; v < villages.size(); ++v)
+    villages[v].spawnVillagers(*this, seed, static_cast<int>(v));
   dayCycle = DayCycle{};
   handPos = glm::vec3(0.0f, 1.0e9f, 0.0f);
   handSpeed = 0.0f;
+  obstacleGrid_.assign(kObstacleGridN * kObstacleGridN, {});
 }
 
 void World::foundTemple() {
-  if (!village.founded) return;
+  if (villages.empty() || !home().founded) return;
+  const Village& village = home();
   // Just outside the village on the first workable compass direction. The
   // field direction (index 2) is excluded so its terrace is never disturbed.
   static const glm::vec2 kDirs[7] = {
@@ -87,12 +172,34 @@ bool World::insideInfluence(const glm::vec3& p) const {
       glm::distance(glm::vec2(p.x, p.z), glm::vec2(temple.pos.x, temple.pos.z)) <
           tune::kTempleInfluence)
     return true;
-  if (village.founded &&
-      glm::distance(glm::vec2(p.x, p.z),
-                    glm::vec2(village.center.x, village.center.z)) <
-          village.influenceRadius())
-    return true;
+  for (const Village& v : villages) {
+    if (!v.founded || v.owner != 0) continue;  // neutral villages project nothing
+    if (glm::distance(glm::vec2(p.x, p.z), glm::vec2(v.center.x, v.center.z)) <
+        v.influenceRadius())
+      return true;
+  }
   return false;
+}
+
+void World::notifyDivineEvent(const glm::vec3& where, float fear, float awe) {
+  for (Village& v : villages) v.notifyDivineEvent(where, fear, awe);
+}
+
+void World::rebuildObstacleGrid() {
+  for (auto& cell : obstacleGrid_) cell.clear();
+  if (obstacleGrid_.empty())
+    obstacleGrid_.assign(kObstacleGridN * kObstacleGridN, {});
+  for (std::size_t i = 0; i < props.size(); ++i) {
+    const Prop& p = props[i];
+    if (!p.alive || p.held || p.carrier >= 0) continue;
+    if (p.type != PropType::Tree && p.type != PropType::Rock &&
+        p.type != PropType::Stump)
+      continue;
+    int cx = static_cast<int>((p.pos.x + Terrain::SIZE * 0.5f) / kObstacleCell);
+    int cz = static_cast<int>((p.pos.z + Terrain::SIZE * 0.5f) / kObstacleCell);
+    if (cx < 0 || cz < 0 || cx >= kObstacleGridN || cz >= kObstacleGridN) continue;
+    obstacleGrid_[cz * kObstacleGridN + cx].push_back(static_cast<int>(i));
+  }
 }
 
 bool World::castFoodMiracle(const glm::vec3& p) {
@@ -100,11 +207,14 @@ bool World::castFoodMiracle(const glm::vec3& p) {
 
   // A charged Miracle Dispenser within reach covers the cost first.
   Building* dispenser = nullptr;
-  for (Building& b : village.buildings)
-    if (b.type == BuildingType::Dispenser && b.stage == 3 && b.charges > 0 &&
-        glm::distance(glm::vec2(b.pos.x, b.pos.z), glm::vec2(p.x, p.z)) <
-            tune::kDispenserCastRadius)
-      dispenser = &b;
+  for (Village& v : villages) {
+    if (v.owner != 0) continue;
+    for (Building& b : v.buildings)
+      if (b.type == BuildingType::Dispenser && b.stage == 3 && b.charges > 0 &&
+          glm::distance(glm::vec2(b.pos.x, b.pos.z), glm::vec2(p.x, p.z)) <
+              tune::kDispenserCastRadius)
+        dispenser = &b;
+  }
 
   if (dispenser) {
     --dispenser->charges;
@@ -129,8 +239,9 @@ bool World::castFoodMiracle(const glm::vec3& p) {
     spawnProp(food);
   }
 
-  // Food from heaven is the most convincing argument there is.
-  village.notifyDivineEvent(p, 0.05f, tune::kAweMiracle);
+  // Food from heaven is the most convincing argument there is - to whichever
+  // village watches it fall.
+  notifyDivineEvent(p, 0.05f, tune::kAweMiracle);
   return true;
 }
 
@@ -186,7 +297,9 @@ void World::scatterProps() {
     float h = terrain.heightAt(x, z);
     if (h < 2.2f || h > 30.0f) continue;
     if (terrain.normalAt(x, z).y < 0.82f) continue;
-    if (village.insideFootprint(x, z)) continue;
+    bool inVillage = false;
+    for (const Village& v : villages) inVillage |= v.insideFootprint(x, z);
+    if (inVillage) continue;
     if (temple.founded && glm::distance(glm::vec2(x, z),
                                         glm::vec2(temple.pos.x, temple.pos.z)) < 18.0f)
       continue;
@@ -215,7 +328,9 @@ void World::scatterProps() {
     float z = rng.range(-0.48f, 0.48f) * Terrain::SIZE;
     float h = terrain.heightAt(x, z);
     if (h < -3.0f) continue;  // allow a few in the shallows
-    if (village.insideFootprint(x, z)) continue;
+    bool inVillage = false;
+    for (const Village& v : villages) inVillage |= v.insideFootprint(x, z);
+    if (inVillage) continue;
     if (temple.founded && glm::distance(glm::vec2(x, z),
                                         glm::vec2(temple.pos.x, temple.pos.z)) < 18.0f)
       continue;
@@ -236,7 +351,8 @@ void World::scatterProps() {
 
 void World::update(float dt) {
   dayCycle.advance(dt);
-  if (village.founded) villagersUpdate(*this, dt);
+  rebuildObstacleGrid();
+  villagersUpdate(*this, dt);
 
   for (std::size_t idx = 0; idx < props.size(); ++idx) {
     Prop& p = props[idx];
@@ -295,14 +411,19 @@ void World::update(float dt) {
         p.angVel = glm::vec3(0.0f);
         p.restTimer = 0.0f;
 
-        // Resources coming to rest on the storage pad are absorbed - covers
+        // Resources coming to rest on a storage pad are absorbed - covers
         // villager hauling, gentle placement, and skill-shot throws alike.
-        if (village.founded && village.inStorageRadius(p.pos) &&
-            (p.type == PropType::Log || p.type == PropType::Food ||
-             p.type == PropType::Tree)) {
-          village.absorbProp(*this, static_cast<int>(idx));
-          continue;
+        bool absorbed = false;
+        if (p.type == PropType::Log || p.type == PropType::Food ||
+            p.type == PropType::Tree) {
+          for (Village& v : villages) {
+            if (!v.founded || !v.inStorageRadius(p.pos)) continue;
+            v.absorbProp(*this, static_cast<int>(idx));
+            absorbed = true;
+            break;
+          }
         }
+        if (absorbed) continue;
 
         if (p.type == PropType::Tree && onGround) {
           if (p.felled) {
@@ -317,7 +438,8 @@ void World::update(float dt) {
     }
   }
 
-  if (village.founded) village.step(*this, dt);
+  for (Village& v : villages)
+    if (v.founded) v.step(*this, dt);
 }
 
 int World::tryCombineScaffold(int scaffoldIdx) {
@@ -354,45 +476,62 @@ int World::tryCombineScaffold(int scaffoldIdx) {
   return best;
 }
 
-bool World::scaffoldPlacementValid(const glm::vec3& pos, int count) const {
-  if (!village.founded) return false;
+// Which OWNED village would host a stack placed at `pos`? Runs every
+// validity rule; returns -1 if the placement is invalid everywhere.
+int World::scaffoldHostVillage(const glm::vec3& pos, int count) const {
   glm::vec2 p2(pos.x, pos.z);
-  glm::vec2 c2(village.center.x, village.center.z);
 
-  // Center upgrades happen AT the totem; everything else needs open ground.
-  if (Village::buildingForStack(count, BuildingType::Store) == BuildingType::Center)
-    return glm::distance(p2, c2) < 8.0f &&
-           village.buildings[village.centerIdx].level < 3;
-
-  if (glm::distance(p2, c2) > tune::kBuildPlacementRange) return false;
-  float footprint = count >= 4 ? 9.0f : (count >= 3 ? 4.5f : 3.5f);
-  if (terrain.heightAt(pos.x, pos.z) < 1.5f) return false;
-  // Area flatness over the footprint.
-  float flat = 0.0f;
-  for (int j = -1; j <= 1; ++j)
-    for (int i = -1; i <= 1; ++i)
-      flat += terrain.normalAt(pos.x + static_cast<float>(i) * footprint * 0.5f,
-                               pos.z + static_cast<float>(j) * footprint * 0.5f).y;
-  if (flat / 9.0f < 0.85f) return false;
-  // Clear of buildings, fields, the temple, and blocking props.
-  for (const Building& b : village.buildings) {
-    if (b.stage < 0) continue;
-    if (glm::distance(glm::vec2(b.pos.x, b.pos.z), p2) < footprint * 0.5f + 4.0f)
-      return false;
-  }
-  if (village.insideAnyField(pos.x, pos.z, footprint * 0.5f + 1.0f)) return false;
-  if (temple.founded &&
-      glm::distance(glm::vec2(temple.pos.x, temple.pos.z), p2) < 14.0f)
-    return false;
-  for (const Prop& p : props) {
-    if (!p.alive) continue;
-    if (p.type != PropType::Tree && p.type != PropType::Rock &&
-        p.type != PropType::Stump)
+  // Center upgrades happen AT a totem; everything else needs open ground.
+  bool isCenter =
+      Village::buildingForStack(count, BuildingType::Store) == BuildingType::Center;
+  for (std::size_t vi = 0; vi < villages.size(); ++vi) {
+    const Village& v = villages[vi];
+    if (!v.founded || v.owner != 0) continue;
+    glm::vec2 c2(v.center.x, v.center.z);
+    if (isCenter) {
+      if (glm::distance(p2, c2) < 8.0f && v.centerIdx >= 0 &&
+          v.buildings[v.centerIdx].level < 3)
+        return static_cast<int>(vi);
       continue;
-    if (glm::distance(glm::vec2(p.pos.x, p.pos.z), p2) < footprint * 0.5f + p.radius)
-      return false;
+    }
+    if (glm::distance(p2, c2) > tune::kBuildPlacementRange) continue;
+
+    float footprint = count >= 4 ? 9.0f : (count >= 3 ? 4.5f : 3.5f);
+    if (terrain.heightAt(pos.x, pos.z) < 1.5f) return -1;
+    float flat = 0.0f;
+    for (int j = -1; j <= 1; ++j)
+      for (int i = -1; i <= 1; ++i)
+        flat += terrain.normalAt(pos.x + static_cast<float>(i) * footprint * 0.5f,
+                                 pos.z + static_cast<float>(j) * footprint * 0.5f).y;
+    if (flat / 9.0f < 0.85f) return -1;
+    // Clear of every village's buildings and fields, the temple, and props.
+    for (const Village& other : villages) {
+      if (!other.founded) continue;
+      for (const Building& b : other.buildings) {
+        if (b.stage < 0) continue;
+        if (glm::distance(glm::vec2(b.pos.x, b.pos.z), p2) < footprint * 0.5f + 4.0f)
+          return -1;
+      }
+      if (other.insideAnyField(pos.x, pos.z, footprint * 0.5f + 1.0f)) return -1;
+    }
+    if (temple.founded &&
+        glm::distance(glm::vec2(temple.pos.x, temple.pos.z), p2) < 14.0f)
+      return -1;
+    for (const Prop& p : props) {
+      if (!p.alive) continue;
+      if (p.type != PropType::Tree && p.type != PropType::Rock &&
+          p.type != PropType::Stump)
+        continue;
+      if (glm::distance(glm::vec2(p.pos.x, p.pos.z), p2) < footprint * 0.5f + p.radius)
+        return -1;
+    }
+    return static_cast<int>(vi);
   }
-  return true;
+  return -1;
+}
+
+bool World::scaffoldPlacementValid(const glm::vec3& pos, int count) const {
+  return scaffoldHostVillage(pos, count) >= 0;
 }
 
 bool World::tryPlaceScaffold(int scaffoldIdx, BuildingType civicChoice) {
@@ -401,7 +540,9 @@ bool World::tryPlaceScaffold(int scaffoldIdx, BuildingType civicChoice) {
   if (!s.alive || s.type != PropType::Scaffold) return false;
   int count = std::clamp(static_cast<int>(std::lround(s.resource)), 1,
                          tune::kMaxScaffoldStack);
-  if (!scaffoldPlacementValid(s.pos, count)) return false;
+  int host = scaffoldHostVillage(s.pos, count);
+  if (host < 0) return false;
+  Village& village = villages[host];
 
   BuildingType type = Village::buildingForStack(count, civicChoice);
   if (type == BuildingType::Center) {

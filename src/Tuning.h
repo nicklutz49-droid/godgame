@@ -88,6 +88,12 @@ inline constexpr float kWonderAweFactor = 1.5f;
 inline constexpr float kCenterInfluencePerLevel = 8.0f;
 inline constexpr float kCenterManaPerLevel = 0.15f;  // worship multiplier/level
 
+// --- the map's villages ---
+inline constexpr int kNeutralVillages = 2;       // target; fewer if the island is hostile
+inline constexpr float kVillageMinSeparation = 130.0f;
+inline constexpr float kNeutralBeliefStart = 0.05f;
+inline constexpr float kNeutralBeliefFloor = 0.02f;
+
 // --- worship, belief, mana, miracles ---
 inline constexpr float kManaStart = 20.0f;
 inline constexpr float kManaMax = 100.0f;

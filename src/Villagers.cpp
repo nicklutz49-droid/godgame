@@ -41,11 +41,12 @@ glm::vec3 doorPos(const Building& b) {
   return b.pos + f * 2.8f;
 }
 
-void releaseClaims(World& w, Villager& v, int selfIdx) {
+void releaseClaims(World& w, Village& vil, int vi, int i, Villager& v) {
+  int myId = villagerId(vi, i);
   for (Prop& p : w.props)
-    if (p.claimedBy == selfIdx) p.claimedBy = -1;
-  for (FarmCell& c : w.village.farmCells)
-    if (c.claimedBy == selfIdx) c.claimedBy = -1;
+    if (p.claimedBy == myId) p.claimedBy = -1;
+  for (FarmCell& c : vil.farmCells)
+    if (c.claimedBy == i) c.claimedBy = -1;
   v.targetProp = -1;
   v.targetCell = -1;
   v.targetBuilding = -1;
@@ -62,26 +63,26 @@ void dropCargo(World& w, Villager& v) {
   v.carriedProp = -1;
 }
 
-void goEat(World& w, Villager& v) {
+void goEat(Village& vil, Villager& v) {
   v.state = VState::GoEat;
-  v.moveTarget = xz(w.village.storagePos());
+  v.moveTarget = xz(vil.storagePos());
 }
 
 enum class DeathCause { Impact, Drowned, Starved };
 
 // THE death funnel: every villager death flows through here (impact landings,
 // drowning, starvation). Never called while held - the divine grip preserves.
-void villagerKill(World& w, int idx, DeathCause cause) {
-  Villager& v = w.village.villagers[idx];
+void villagerKill(World& w, Village& vil, int vi, int idx, DeathCause cause) {
+  Villager& v = vil.villagers[idx];
   if (!v.alive) return;
   dropCargo(w, v);
-  releaseClaims(w, v, idx);
+  releaseClaims(w, vil, vi, idx, v);
   v.alive = false;
   v.held = false;
   v.inside = false;
   v.state = VState::Idle;
-  w.village.onVillagerDeath(idx);  // frees the bed
-  ++w.village.deaths;
+  vil.onVillagerDeath(idx);  // frees the bed
+  ++vil.deaths;
 
   // The body: a real prop, carryable to the graveyard (it floats, grimly).
   Prop body;
@@ -97,30 +98,31 @@ void villagerKill(World& w, int idx, DeathCause cause) {
   w.spawnProp(body);
 
   // Every death shakes the village's faith, and the sight of it terrifies.
-  w.village.belief = std::max(tune::kBeliefFloor,
-                              w.village.belief - tune::kBeliefDeathPenalty);
-  w.village.notifyDivineEvent(v.pos, 0.85f, 0.0f);
+  float floor = vil.owner == 0 ? tune::kBeliefFloor : tune::kNeutralBeliefFloor;
+  vil.belief = std::max(floor, vil.belief - tune::kBeliefDeathPenalty);
+  w.notifyDivineEvent(v.pos, 0.85f, 0.0f);
 }
 
-void goHome(World& w, Villager& v) {
+void goHome(Village& vil, Villager& v) {
   v.state = VState::GoHome;
-  glm::vec3 t = v.home >= 0 ? doorPos(w.village.buildings[v.home])
-                            : w.village.campfirePos();
+  glm::vec3 t = v.home >= 0 ? doorPos(vil.buildings[v.home])
+                            : vil.campfirePos();
   v.moveTarget = xz(t);
 }
 
 // Nearest prop matching a predicate, respecting claims and the blacklist.
 template <typename Pred>
-int nearestProp(const World& w, const Villager& v, int selfIdx, Pred pred) {
+int nearestProp(const World& w, const Village& vil, const Villager& v, int myId,
+                Pred pred) {
   int best = -1;
   float bestD = 1.0e9f;
   for (std::size_t i = 0; i < w.props.size(); ++i) {
     const Prop& p = w.props[i];
     if (!p.alive || p.held || p.carrier >= 0) continue;
-    if (p.claimedBy != -1 && p.claimedBy != selfIdx) continue;
+    if (p.claimedBy != -1 && p.claimedBy != myId) continue;
     if (static_cast<int>(i) == v.blacklistProp) continue;
     if (!pred(p)) continue;
-    if (glm::distance(xz(p.pos), xz(w.village.center)) > tune::kWorkRadius) continue;
+    if (glm::distance(xz(p.pos), xz(vil.center)) > tune::kWorkRadius) continue;
     float d = glm::distance(xz(p.pos), xz(v.pos));
     if (d < bestD) {
       bestD = d;
@@ -130,31 +132,35 @@ int nearestProp(const World& w, const Villager& v, int selfIdx, Pred pred) {
   return best;
 }
 
-int openBuildSite(const World& w) {
-  for (std::size_t i = 0; i < w.village.buildings.size(); ++i) {
-    const Building& b = w.village.buildings[i];
+int openBuildSite(const Village& vil) {
+  for (std::size_t i = 0; i < vil.buildings.size(); ++i) {
+    const Building& b = vil.buildings[i];
     if (b.stage >= 0 && b.stage < 3) return static_cast<int>(i);
   }
   return -1;
 }
 
-int completedWorkshop(const World& w) {
-  for (std::size_t i = 0; i < w.village.buildings.size(); ++i) {
-    const Building& b = w.village.buildings[i];
+int completedWorkshop(const Village& vil) {
+  for (std::size_t i = 0; i < vil.buildings.size(); ++i) {
+    const Building& b = vil.buildings[i];
     if (b.type == BuildingType::Workshop && b.stage == 3)
       return static_cast<int>(i);
   }
   return -1;
 }
 
-int looseScaffoldCount(const World& w) {
+int looseScaffoldCount(const World& w, const Village& vil) {
   int n = 0;
-  for (const Prop& p : w.props)
-    if (p.alive && p.type == PropType::Scaffold && !p.held && p.carrier < 0) ++n;
+  for (const Prop& p : w.props) {
+    if (!(p.alive && p.type == PropType::Scaffold && !p.held && p.carrier < 0))
+      continue;
+    if (glm::distance(xz(p.pos), xz(vil.center)) > tune::kWorkRadius) continue;
+    ++n;
+  }
   return n;
 }
 
-int spawnCarried(World& w, Villager& v, int selfIdx, PropType type, float meals) {
+int spawnCarried(World& w, Villager& v, int myId, PropType type, float meals) {
   Prop p;
   p.type = type;
   p.scale = 1.0f;
@@ -163,60 +169,64 @@ int spawnCarried(World& w, Villager& v, int selfIdx, PropType type, float meals)
   p.pos = v.pos + glm::vec3(0.0f, 1.1f * v.scale, 0.0f);
   p.asleep = true;
   int idx = w.spawnProp(p);
-  w.props[idx].carrier = selfIdx;
+  w.props[idx].carrier = myId;
   v.carriedProp = idx;
   return idx;
 }
 
 // --- job planning (called from the think tick when idle-ish) ---
 
-void planForester(World& w, int i) {
-  Villager& v = w.village.villagers[i];
+void planForester(World& w, Village& vil, int vi, int i) {
+  Villager& v = vil.villagers[i];
+  int myId = villagerId(vi, i);
   if (v.carriedProp >= 0) {  // resume hauling
     v.state = VState::Haul;
-    v.moveTarget = xz(w.village.storagePos());
+    v.moveTarget = xz(vil.storagePos());
     return;
   }
   // Loose logs outrank standing trees - free cleanup behavior.
-  int log = nearestProp(w, v, i, [](const Prop& p) { return p.type == PropType::Log; });
+  int log = nearestProp(w, vil, v, myId,
+                        [](const Prop& p) { return p.type == PropType::Log; });
   if (log >= 0) {
-    w.props[log].claimedBy = i;
+    w.props[log].claimedBy = myId;
     v.targetProp = log;
     v.state = VState::GoTo;
     v.moveTarget = xz(w.props[log].pos);
     return;
   }
-  int tree = nearestProp(w, v, i, [](const Prop& p) {
+  int tree = nearestProp(w, vil, v, myId, [](const Prop& p) {
     return p.type == PropType::Tree && p.resource > 0.0f && !p.felled && p.asleep;
   });
   if (tree >= 0) {
-    w.props[tree].claimedBy = i;
+    w.props[tree].claimedBy = myId;
     v.targetProp = tree;
     v.state = VState::GoTo;
     v.moveTarget = xz(w.props[tree].pos);
     return;
   }
   v.state = VState::Wander;  // visibly unemployed at the village edge
-  v.moveTarget = xz(w.village.center);
+  v.moveTarget = xz(vil.center);
 }
 
-void planFarmer(World& w, int i) {
-  Villager& v = w.village.villagers[i];
+void planFarmer(World& w, Village& vil, int vi, int i) {
+  Villager& v = vil.villagers[i];
+  int myId = villagerId(vi, i);
   if (v.carriedProp >= 0) {
     v.state = VState::Haul;
-    v.moveTarget = xz(w.village.storagePos());
+    v.moveTarget = xz(vil.storagePos());
     return;
   }
   // Loose food (dropped cargo, miracle bundles) gets gathered first.
-  int loose = nearestProp(w, v, i, [](const Prop& p) { return p.type == PropType::Food; });
+  int loose = nearestProp(w, vil, v, myId,
+                          [](const Prop& p) { return p.type == PropType::Food; });
   if (loose >= 0) {
-    w.props[loose].claimedBy = i;
+    w.props[loose].claimedBy = myId;
     v.targetProp = loose;
     v.state = VState::GoTo;
     v.moveTarget = xz(w.props[loose].pos);
     return;
   }
-  auto& cells = w.village.farmCells;
+  auto& cells = vil.farmCells;
   int ripe = -1, least = -1;
   float leastG = 0.96f;
   for (std::size_t c = 0; c < cells.size(); ++c) {
@@ -236,26 +246,27 @@ void planFarmer(World& w, int i) {
     return;
   }
   v.state = VState::Wander;
-  v.moveTarget = w.village.fields.empty() ? xz(w.village.center)
-                                          : w.village.fields[0].center;
+  v.moveTarget = vil.fields.empty() ? xz(vil.center)
+                                          : vil.fields[0].center;
 }
 
-void planFisherman(World& w, int i) {
-  Villager& v = w.village.villagers[i];
+void planFisherman(World& w, Village& vil, int vi, int i) {
+  Villager& v = vil.villagers[i];
+  (void)w;
   if (v.carriedProp >= 0) {
     v.state = VState::Haul;
-    v.moveTarget = xz(w.village.storagePos());
+    v.moveTarget = xz(vil.storagePos());
     return;
   }
-  if (w.village.fishingSpots.empty()) {
+  if (vil.fishingSpots.empty()) {
     v.state = VState::Wander;
-    v.moveTarget = xz(w.village.center);
+    v.moveTarget = xz(vil.center);
     return;
   }
   int best = 0;
   float bestD = 1.0e9f;
-  for (std::size_t s = 0; s < w.village.fishingSpots.size(); ++s) {
-    float d = glm::distance(xz(w.village.fishingSpots[s]), xz(v.pos));
+  for (std::size_t s = 0; s < vil.fishingSpots.size(); ++s) {
+    float d = glm::distance(xz(vil.fishingSpots[s]), xz(v.pos));
     if (d < bestD) {
       bestD = d;
       best = static_cast<int>(s);
@@ -264,21 +275,23 @@ void planFisherman(World& w, int i) {
   v.targetBuilding = -1;
   v.targetProp = -1;
   v.state = VState::GoTo;
-  glm::vec3 spot = w.village.fishingSpots[best];
+  glm::vec3 spot = vil.fishingSpots[best];
   // Fishermen share spots; fan out a little by index so they don't stack.
   v.moveTarget = xz(spot) + glm::vec2(std::sin(static_cast<float>(i)),
                                       std::cos(static_cast<float>(i))) *
                                 1.6f;
 }
 
-void planWorshipper(World& w, int i) {
-  Villager& v = w.village.villagers[i];
-  if (w.village.centerIdx < 0) {
+void planWorshipper(World& w, Village& vil, int vi, int i) {
+  Villager& v = vil.villagers[i];
+  (void)w;
+  (void)vi;
+  if (vil.centerIdx < 0) {
     v.state = VState::Wander;
-    v.moveTarget = xz(w.village.center);
+    v.moveTarget = xz(vil.center);
     return;
   }
-  const Building& totem = w.village.buildings[w.village.centerIdx];
+  const Building& totem = vil.buildings[vil.centerIdx];
   // Join the dance ring wherever is closest to where they stand.
   glm::vec2 from = xz(v.pos) - xz(totem.pos);
   v.danceAngle = glm::length(from) > 0.5f ? std::atan2(from.x, from.y)
@@ -288,37 +301,38 @@ void planWorshipper(World& w, int i) {
                                      tune::kWorshipDanceRadius;
 }
 
-void planBuilder(World& w, int i) {
-  Villager& v = w.village.villagers[i];
-  int site = openBuildSite(w);
+void planBuilder(World& w, Village& vil, int vi, int i) {
+  Villager& v = vil.villagers[i];
+  (void)vi;
+  int site = openBuildSite(vil);
   if (site < 0) {
     dropCargo(w, v);
     // No construction to serve: work the workshop bench, crafting scaffolds,
     // as long as there's wood and the yard isn't already full of them.
-    int shop = completedWorkshop(w);
-    if (shop >= 0 && w.village.wood >= tune::kScaffoldWoodCost &&
-        looseScaffoldCount(w) < tune::kMaxLooseScaffolds) {
+    int shop = completedWorkshop(vil);
+    if (shop >= 0 && vil.wood >= tune::kScaffoldWoodCost &&
+        looseScaffoldCount(w, vil) < tune::kMaxLooseScaffolds) {
       v.targetBuilding = shop;
       v.state = VState::GoTo;
-      v.moveTarget = xz(w.village.buildings[shop].pos);
+      v.moveTarget = xz(vil.buildings[shop].pos);
       return;
     }
     v.state = VState::Wander;
-    v.moveTarget = xz(w.village.storagePos());
+    v.moveTarget = xz(vil.storagePos());
     return;
   }
-  Building& b = w.village.buildings[site];
+  Building& b = vil.buildings[site];
   v.targetBuilding = site;
   if (v.carriedProp >= 0) {
     v.state = VState::GoTo;  // deliver the log to the site
     v.moveTarget = xz(b.pos);
   } else if (b.woodDelivered < b.woodCost) {
-    if (w.village.wood > 0) {
+    if (vil.wood > 0) {
       v.state = VState::GoTo;  // withdraw at the storage pad
-      v.moveTarget = xz(w.village.storagePos());
+      v.moveTarget = xz(vil.storagePos());
     } else {
       v.state = VState::Wander;  // visibly waiting for wood
-      v.moveTarget = xz(w.village.storagePos());
+      v.moveTarget = xz(vil.storagePos());
     }
   } else {
     v.state = VState::GoTo;  // hammer
@@ -326,30 +340,31 @@ void planBuilder(World& w, int i) {
   }
 }
 
-void planJob(World& w, int i) {
-  switch (w.village.villagers[i].job) {
-    case Job::Forester: planForester(w, i); break;
-    case Job::Farmer: planFarmer(w, i); break;
-    case Job::Fisherman: planFisherman(w, i); break;
-    case Job::Builder: planBuilder(w, i); break;
-    case Job::Worshipper: planWorshipper(w, i); break;
+void planJob(World& w, Village& vil, int vi, int i) {
+  switch (vil.villagers[i].job) {
+    case Job::Forester: planForester(w, vil, vi, i); break;
+    case Job::Farmer: planFarmer(w, vil, vi, i); break;
+    case Job::Fisherman: planFisherman(w, vil, vi, i); break;
+    case Job::Builder: planBuilder(w, vil, vi, i); break;
+    case Job::Worshipper: planWorshipper(w, vil, vi, i); break;
     default: break;
   }
 }
 
 // Re-check that the current task still makes sense (the hand may have stolen
 // the tree, another builder may have finished the site...).
-void validateJob(World& w, int i) {
-  Villager& v = w.village.villagers[i];
+void validateJob(World& w, Village& vil, int vi, int i) {
+  Villager& v = vil.villagers[i];
+  int myId = villagerId(vi, i);
   if (v.targetProp >= 0) {
     const Prop& p = w.props[v.targetProp];
     bool ok = p.alive && !p.held && p.carrier < 0 &&
-              (p.claimedBy == i || p.claimedBy == -1);
+              (p.claimedBy == myId || p.claimedBy == -1);
     if (ok && p.type == PropType::Tree)
       ok = p.resource > 0.0f && !p.felled && p.asleep;
     if (ok && p.type == PropType::Log) ok = true;
     if (!ok) {
-      releaseClaims(w, v, i);
+      releaseClaims(w, vil, vi, i, v);
       v.state = VState::Idle;  // shrug; re-plan next think
       v.stateTimer = 0.6f;
       return;
@@ -357,11 +372,11 @@ void validateJob(World& w, int i) {
     if (v.state == VState::GoTo) v.moveTarget = xz(p.pos);  // it may have moved
   }
   if (v.targetBuilding >= 0) {
-    const Building& b = w.village.buildings[v.targetBuilding];
+    const Building& b = vil.buildings[v.targetBuilding];
     // A completed Workshop is a valid destination - that's a crafting trip.
     bool crafting = b.type == BuildingType::Workshop && b.stage == 3;
     if (v.job == Job::Builder && !crafting && (b.stage < 0 || b.stage >= 3)) {
-      releaseClaims(w, v, i);
+      releaseClaims(w, vil, vi, i, v);
       v.state = VState::Idle;
       v.stateTimer = 0.4f;
     }
@@ -370,8 +385,9 @@ void validateJob(World& w, int i) {
 
 // --- arrivals & work cycles ---
 
-void arriveAtTarget(World& w, int i) {
-  Villager& v = w.village.villagers[i];
+void arriveAtTarget(World& w, Village& vil, int vi, int i) {
+  Villager& v = vil.villagers[i];
+  (void)vi;
   switch (v.state) {
     case VState::Wander:
       v.state = VState::Idle;
@@ -382,7 +398,7 @@ void arriveAtTarget(World& w, int i) {
       }
       break;
     case VState::GoEat:
-      if (w.village.food > 0) {
+      if (vil.food > 0) {
         v.state = VState::Eat;
         v.stateTimer = tune::kEatSeconds;
       } else {
@@ -415,12 +431,12 @@ void arriveAtTarget(World& w, int i) {
                                                : tune::kPickupSeconds;
         v.workCount = 0;
       } else if (v.targetCell >= 0) {
-        const FarmCell& c = w.village.farmCells[v.targetCell];
+        const FarmCell& c = vil.farmCells[v.targetCell];
         v.state = VState::Work;
         v.workTimer = c.growth >= 1.0f ? tune::kHarvestSeconds : tune::kTendSeconds;
       } else if (v.job == Job::Fisherman) {
         // Face open water: away from the village center.
-        glm::vec2 away = xz(v.pos) - xz(w.village.center);
+        glm::vec2 away = xz(v.pos) - xz(vil.center);
         if (glm::length(away) > 0.1f)
           v.yaw = std::atan2(away.x, away.y);
         v.state = VState::Work;
@@ -430,7 +446,7 @@ void arriveAtTarget(World& w, int i) {
         v.state = VState::Work;  // the dance is continuous (see update)
         v.workTimer = 1.0f;
       } else if (v.targetBuilding >= 0) {
-        Building& b = w.village.buildings[v.targetBuilding];
+        Building& b = vil.buildings[v.targetBuilding];
         bool atSite = glm::distance(xz(b.pos), xz(v.pos)) < 4.0f;
         if (atSite && b.type == BuildingType::Workshop && b.stage == 3) {
           // Crafting a scaffold at the bench.
@@ -461,15 +477,16 @@ void arriveAtTarget(World& w, int i) {
   }
 }
 
-void workCycleComplete(World& w, int i) {
-  Villager& v = w.village.villagers[i];
+void workCycleComplete(World& w, Village& vil, int vi, int i) {
+  Villager& v = vil.villagers[i];
+  int myId = villagerId(vi, i);
 
   // Burial: the carried body is laid to rest at the graveyard.
   if (v.carriedProp >= 0 && w.props[v.carriedProp].type == PropType::Body) {
     int body = v.carriedProp;
     w.props[body].carrier = -1;
     v.carriedProp = -1;
-    if (!w.village.buryBody(w, body)) {
+    if (!vil.buryBody(w, body)) {
       // Graveyard gone or out of range: set the body down respectfully.
       w.props[body].asleep = false;
     }
@@ -481,11 +498,11 @@ void workCycleComplete(World& w, int i) {
 
   // Deposit at the storage pad (forester/farmer/fisherman hauling).
   if (v.state == VState::Work && v.carriedProp >= 0 &&
-      w.village.inStorageRadius(v.pos) &&
+      vil.inStorageRadius(v.pos) &&
       (v.targetBuilding < 0 || v.job != Job::Builder)) {
     Prop& p = w.props[v.carriedProp];
     p.carrier = -1;
-    w.village.absorbProp(w, v.carriedProp);
+    vil.absorbProp(w, v.carriedProp);
     v.carriedProp = -1;
     v.state = VState::Idle;
     v.stateTimer = 0.2f;
@@ -499,17 +516,17 @@ void workCycleComplete(World& w, int i) {
     if (p.type == PropType::Log || p.type == PropType::Food ||
         p.type == PropType::Body) {
       // Shoulder it: resources head for the pile, the dead for the graveyard.
-      p.carrier = i;
+      p.carrier = myId;
       p.claimedBy = -1;
       v.carriedProp = v.targetProp;
       v.targetProp = -1;
       v.state = VState::Haul;
       if (p.type == PropType::Body) {
-        int g = w.village.completedGraveyard();
-        v.moveTarget = g >= 0 ? xz(w.village.buildings[g].pos)
-                              : xz(w.village.storagePos());
+        int g = vil.completedGraveyard();
+        v.moveTarget = g >= 0 ? xz(vil.buildings[g].pos)
+                              : xz(vil.storagePos());
       } else {
-        v.moveTarget = xz(w.village.storagePos());
+        v.moveTarget = xz(vil.storagePos());
       }
       return;
     }
@@ -542,14 +559,14 @@ void workCycleComplete(World& w, int i) {
   }
 
   if (v.targetCell >= 0) {
-    FarmCell& c = w.village.farmCells[v.targetCell];
+    FarmCell& c = vil.farmCells[v.targetCell];
     if (c.growth >= 1.0f) {
       c.growth = 0.0f;
       c.claimedBy = -1;
       v.targetCell = -1;
-      spawnCarried(w, v, i, PropType::Food, static_cast<float>(tune::kFoodPerHarvest));
+      spawnCarried(w, v, myId, PropType::Food, static_cast<float>(tune::kFoodPerHarvest));
       v.state = VState::Haul;
-      v.moveTarget = xz(w.village.storagePos());
+      v.moveTarget = xz(vil.storagePos());
     } else {
       c.tendedTimer = tune::kCropTendWindow;
       c.claimedBy = -1;
@@ -569,9 +586,9 @@ void workCycleComplete(World& w, int i) {
     v.rng = r.state;
     if (caught) ++v.workCount;
     if (v.workCount >= tune::kCatchesPerTrip) {
-      spawnCarried(w, v, i, PropType::Food, static_cast<float>(tune::kFoodPerCatch));
+      spawnCarried(w, v, myId, PropType::Food, static_cast<float>(tune::kFoodPerCatch));
       v.state = VState::Haul;
-      v.moveTarget = xz(w.village.storagePos());
+      v.moveTarget = xz(vil.storagePos());
     } else {
       v.workTimer = tune::kCastSeconds;
     }
@@ -579,14 +596,14 @@ void workCycleComplete(World& w, int i) {
   }
 
   if (v.job == Job::Builder && v.targetBuilding >= 0) {
-    Building& b = w.village.buildings[v.targetBuilding];
+    Building& b = vil.buildings[v.targetBuilding];
     bool atSite = glm::distance(xz(b.pos), xz(v.pos)) < 4.5f;
     if (b.type == BuildingType::Workshop && b.stage == 3 && atSite) {
       // A scaffold comes off the bench.
-      if (w.village.wood >= tune::kScaffoldWoodCost &&
-          looseScaffoldCount(w) < tune::kMaxLooseScaffolds) {
-        w.village.wood -= tune::kScaffoldWoodCost;
-        ++w.village.scaffoldsCrafted;
+      if (vil.wood >= tune::kScaffoldWoodCost &&
+          looseScaffoldCount(w, vil) < tune::kMaxLooseScaffolds) {
+        vil.wood -= tune::kScaffoldWoodCost;
+        ++vil.scaffoldsCrafted;
         Prop s;
         s.type = PropType::Scaffold;
         s.scale = 1.0f;
@@ -619,9 +636,9 @@ void workCycleComplete(World& w, int i) {
       v.thinkTimer = std::min(v.thinkTimer, 0.15f);
     } else if (!atSite && v.carriedProp < 0) {
       // Withdraw a log from storage.
-      if (w.village.wood > 0) {
-        --w.village.wood;
-        spawnCarried(w, v, i, PropType::Log, 0.0f);
+      if (vil.wood > 0) {
+        --vil.wood;
+        spawnCarried(w, v, myId, PropType::Log, 0.0f);
         v.state = VState::GoTo;
         v.moveTarget = xz(b.pos);
       } else {
@@ -641,10 +658,10 @@ void workCycleComplete(World& w, int i) {
 }
 
 // Every hard contact funnels through this one function.
-void applyLanding(World& w, int i, float impact) {
-  Villager& v = w.village.villagers[i];
+void applyLanding(World& w, Village& vil, int vi, int i, float impact) {
+  Villager& v = vil.villagers[i];
   if (!tune::kVillagersInvulnerable && impact > tune::kLethalImpactSpeed) {
-    villagerKill(w, i, DeathCause::Impact);
+    villagerKill(w, vil, vi, i, DeathCause::Impact);
     return;
   }
   v.rot = glm::quat(1, 0, 0, 0);
@@ -662,9 +679,9 @@ void applyLanding(World& w, int i, float impact) {
 
   if (v.pendingAssign) {
     v.pendingAssign = false;
-    Job j = w.village.resolveJobAtPoint(w, v.pos);
+    Job j = vil.resolveJobAtPoint(w, v.pos);
     if (j != Job::None && j != v.job) {
-      releaseClaims(w, v, i);
+      releaseClaims(w, vil, vi, i, v);
       v.job = j;
       v.assignedFlash = 1.6f;
     }
@@ -684,12 +701,12 @@ void applyLanding(World& w, int i, float impact) {
 }
 
 // Context steering: probe a few headings, penalize water/cliffs/obstacles.
-void steer(World& w, int i, float dt) {
-  Villager& v = w.village.villagers[i];
+void steer(World& w, Village& vil, int vi, int i, float dt) {
+  Villager& v = vil.villagers[i];
   glm::vec2 to = v.moveTarget - xz(v.pos);
   float dist = glm::length(to);
   if (dist < 1.8f) {
-    arriveAtTarget(w, i);
+    arriveAtTarget(w, vil, vi, i);
     return;
   }
   float desired = std::atan2(to.x, to.y);
@@ -703,17 +720,13 @@ void steer(World& w, int i, float dt) {
   };
   Circle obstacles[12];
   int obstacleCount = 0;
-  for (const Prop& p : w.props) {
-    if (!p.alive || p.carrier >= 0 || p.held) continue;
-    if (p.type != PropType::Tree && p.type != PropType::Rock &&
-        p.type != PropType::Stump)
-      continue;
+  w.forEachObstacleNear(xz(v.pos), [&](const Prop& p) {
+    if (obstacleCount == 12) return;
     glm::vec2 d = xz(p.pos) - xz(v.pos);
-    if (glm::dot(d, d) > 7.0f * 7.0f) continue;
+    if (glm::dot(d, d) > 7.0f * 7.0f) return;
     float rr = p.radius * 0.8f + 0.5f;
     obstacles[obstacleCount++] = {xz(p.pos), rr * rr};
-    if (obstacleCount == 12) break;
-  }
+  });
   if (w.temple.founded && obstacleCount < 12) {
     glm::vec2 d = glm::vec2(w.temple.pos.x, w.temple.pos.z) - xz(v.pos);
     if (glm::dot(d, d) < 10.0f * 10.0f)
@@ -739,8 +752,8 @@ void steer(World& w, int i, float dt) {
         break;
       }
     }
-    for (std::size_t b = 0; b < w.village.buildings.size(); ++b) {
-      const Building& bd = w.village.buildings[b];
+    for (std::size_t b = 0; b < vil.buildings.size(); ++b) {
+      const Building& bd = vil.buildings[b];
       if (bd.stage < 0) continue;
       if (bd.type == BuildingType::Campfire || bd.type == BuildingType::Center)
         continue;
@@ -780,10 +793,10 @@ void steer(World& w, int i, float dt) {
   v.progressTimer += dt;
   if (v.progressTimer > 3.0f) {
     if (glm::distance(xz(v.pos), v.lastProgressPos) < 0.6f) {
-      ++w.village.stuckEvents;
+      ++vil.stuckEvents;
       v.blacklistProp = v.targetProp;
       v.blacklistTimer = 45.0f;
-      releaseClaims(w, v, i);
+      releaseClaims(w, vil, vi, i, v);
       v.state = VState::Idle;
       v.stateTimer = 1.0f;
     }
@@ -793,8 +806,8 @@ void steer(World& w, int i, float dt) {
 }
 
 // The priority ladder, evaluated on the staggered think tick.
-void think(World& w, int i) {
-  Villager& v = w.village.villagers[i];
+void think(World& w, Village& vil, int vi, int i) {
+  Villager& v = vil.villagers[i];
   if (!isVoluntary(v.state)) return;
   float t = w.dayCycle.t;
   bool duskOrNight = t >= tune::kDuskT || t < tune::kDawnT - 0.02f;
@@ -806,8 +819,8 @@ void think(World& w, int i) {
     if (v.state == VState::Work && !hardNight) return;  // finish the swing
     if (v.state == VState::Haul && !hardNight) return;  // finish the deposit
     dropCargo(w, v);
-    releaseClaims(w, v, i);
-    goHome(w, v);
+    releaseClaims(w, vil, vi, i, v);
+    goHome(vil, v);
     return;
   }
   if (v.state == VState::Sleep) {
@@ -820,17 +833,17 @@ void think(World& w, int i) {
 
   // Rung 4: hunger.
   bool eating = v.state == VState::GoEat || v.state == VState::Eat;
-  if (!eating && w.village.food > 0) {
+  if (!eating && vil.food > 0) {
     if (v.hunger > tune::kHungerUrgent) {
       dropCargo(w, v);
-      releaseClaims(w, v, i);
-      goEat(w, v);
+      releaseClaims(w, vil, vi, i, v);
+      goEat(vil, v);
       return;
     }
     if (v.hunger > tune::kHungerWant &&
         (v.state == VState::Idle || v.state == VState::Wander ||
          v.state == VState::Chat)) {
-      goEat(w, v);
+      goEat(vil, v);
       return;
     }
   }
@@ -839,7 +852,7 @@ void think(World& w, int i) {
   // Rung 4.5: exhaustion - sleep on the spot.
   if (v.energy < 0.10f) {
     dropCargo(w, v);
-    releaseClaims(w, v, i);
+    releaseClaims(w, vil, vi, i, v);
     v.state = VState::Sleep;
     return;
   }
@@ -849,11 +862,11 @@ void think(World& w, int i) {
   if (v.scale > 0.9f && v.carriedProp < 0 &&
       (v.state == VState::Idle || v.state == VState::Wander ||
        v.state == VState::Chat) &&
-      w.village.completedGraveyard() >= 0) {
-    int body = nearestProp(w, v, i,
+      vil.completedGraveyard() >= 0) {
+    int body = nearestProp(w, vil, v, villagerId(vi, i),
                            [](const Prop& p) { return p.type == PropType::Body; });
     if (body >= 0) {
-      w.props[body].claimedBy = i;
+      w.props[body].claimedBy = villagerId(vi, i);
       v.targetProp = body;
       v.state = VState::GoTo;
       v.moveTarget = xz(w.props[body].pos);
@@ -866,12 +879,12 @@ void think(World& w, int i) {
   // Rung 6: the job.
   if (v.job != Job::None && v.scale > 0.9f) {  // children don't work yet
     if (v.state == VState::Idle && v.stateTimer <= 0.0f) {
-      planJob(w, i);
+      planJob(w, vil, vi, i);
       return;
     }
     if (v.state == VState::GoTo || v.state == VState::Work ||
         v.state == VState::Haul) {
-      validateJob(w, i);
+      validateJob(w, vil, vi, i);
       return;
     }
     if (v.state == VState::Wander || v.state == VState::Chat) return;  // brief break
@@ -882,8 +895,8 @@ void think(World& w, int i) {
   if (v.state == VState::Idle && v.stateTimer <= 0.0f) {
     XorShift r(v.rng);
     float roll = r.uniform();
-    glm::vec3 anchor = v.home >= 0 ? w.village.buildings[v.home].pos
-                                   : w.village.center;
+    glm::vec3 anchor = v.home >= 0 ? vil.buildings[v.home].pos
+                                   : vil.center;
     if (roll < 0.55f) {
       v.state = VState::Wander;
       v.moveTarget = xz(anchor) + glm::vec2(r.range(-1.0f, 1.0f), r.range(-1.0f, 1.0f)) *
@@ -893,9 +906,9 @@ void think(World& w, int i) {
     } else {
       // Chat: find another idle adult nearby.
       int partner = -1;
-      for (std::size_t o = 0; o < w.village.villagers.size(); ++o) {
+      for (std::size_t o = 0; o < vil.villagers.size(); ++o) {
         if (static_cast<int>(o) == i) continue;
-        Villager& u = w.village.villagers[o];
+        Villager& u = vil.villagers[o];
         if (!u.alive || u.state != VState::Idle || u.inside || u.held) continue;
         if (glm::distance(xz(u.pos), xz(v.pos)) < 9.0f) {
           partner = static_cast<int>(o);
@@ -903,7 +916,7 @@ void think(World& w, int i) {
         }
       }
       if (partner >= 0) {
-        Villager& u = w.village.villagers[partner];
+        Villager& u = vil.villagers[partner];
         float dur = r.range(3.5f, 6.0f);
         v.state = VState::Chat;
         v.stateTimer = dur;
@@ -919,10 +932,8 @@ void think(World& w, int i) {
   }
 }
 
-}  // namespace
-
-void villagersUpdate(World& world, float dt) {
-  auto& vs = world.village.villagers;
+void updateVillage(World& world, Village& vil, int vi, float dt) {
+  auto& vs = vil.villagers;
   const float dayFrac = dt / world.dayCycle.secondsPerDay;
   const float t = world.dayCycle.t;
 
@@ -952,7 +963,7 @@ void villagersUpdate(World& world, float dt) {
     if (!tune::kVillagersInvulnerable && v.hunger >= 0.999f && !v.held) {
       v.starveTimer += dayFrac;
       if (v.starveTimer > tune::kStarveDays) {
-        villagerKill(world, i, DeathCause::Starved);
+        villagerKill(world, vil, vi, i, DeathCause::Starved);
         continue;
       }
     } else {
@@ -989,6 +1000,7 @@ void villagersUpdate(World& world, float dt) {
       v.walkPhase += dt * 9.0f;  // wriggle in the palm
       continue;                  // the hand drives the position
     }
+    int myId = villagerId(vi, i);
 
     if (v.inside) {
       // Sleeping in the house; emerge after dawn, staggered per villager.
@@ -1000,9 +1012,9 @@ void villagersUpdate(World& world, float dt) {
           v.state = VState::Idle;
           v.stateTimer = 1.8f;  // morning stretch
           if (v.home >= 0) {
-            v.pos = doorPos(world.village.buildings[v.home]);
+            v.pos = doorPos(vil.buildings[v.home]);
             v.pos.y = world.terrain.heightAt(v.pos.x, v.pos.z);
-            v.yaw = world.village.buildings[v.home].yaw;
+            v.yaw = vil.buildings[v.home].yaw;
           }
         }
       }
@@ -1012,7 +1024,7 @@ void villagersUpdate(World& world, float dt) {
     // A carried prop rides in the arms.
     if (v.carriedProp >= 0) {
       Prop& c = world.props[v.carriedProp];
-      if (!c.alive || c.held || c.carrier != i) {
+      if (!c.alive || c.held || c.carrier != myId) {
         // The hand snatched it (or it vanished): react, re-plan.
         v.carriedProp = -1;
         if (isVoluntary(v.state)) {
@@ -1041,7 +1053,7 @@ void villagersUpdate(World& world, float dt) {
     v.thinkTimer -= dt;
     if (v.thinkTimer <= 0.0f) {
       v.thinkTimer += tune::kThinkInterval;
-      think(world, i);
+      think(world, vil, vi, i);
     }
 
     // Continuous per-state behavior.
@@ -1064,19 +1076,19 @@ void villagersUpdate(World& world, float dt) {
             v.pos, v.vel, v.angVel, tune::kVillagerRadius, 0.05f, world.terrain,
             tune::kVillagerRestitution, 0.45f, 0.8f, onGround);
         if (onGround && (impact > 0.01f || glm::length(v.vel) < 0.8f))
-          applyLanding(world, i, impact);
+          applyLanding(world, vil, vi, i, impact);
         break;
       }
       case VState::Swim: {
         v.submergedTime += dt;
         if (!tune::kVillagersInvulnerable &&
             v.submergedTime > tune::kDrownSeconds) {
-          villagerKill(world, i, DeathCause::Drowned);
+          villagerKill(world, vil, vi, i, DeathCause::Drowned);
           break;
         }
         float targetY = Terrain::WATER_LEVEL - 1.15f * v.scale;
         v.pos.y += (targetY - v.pos.y) * std::min(1.0f, 4.0f * dt);
-        glm::vec2 to = xz(world.village.center) - xz(v.pos);
+        glm::vec2 to = xz(vil.center) - xz(v.pos);
         if (glm::length(to) > 1.0f)
           v.yaw = turnToward(v.yaw, std::atan2(to.x, to.y),
                              tune::kTurnRate * 0.6f * dt);
@@ -1087,7 +1099,7 @@ void villagersUpdate(World& world, float dt) {
         if (ground > Terrain::WATER_LEVEL - 0.6f) {
           v.pos.y = ground;
           v.submergedTime = 0.0f;
-          applyLanding(world, i, 0.0f);
+          applyLanding(world, vil, vi, i, 0.0f);
         }
         break;
       }
@@ -1107,7 +1119,7 @@ void villagersUpdate(World& world, float dt) {
             glm::vec2 away = xz(v.pos) - glm::vec2(world.handPos.x, world.handPos.z);
             float len = glm::length(away);
             away = len > 0.5f ? away / len
-                              : glm::normalize(xz(world.village.center) - xz(v.pos));
+                              : glm::normalize(xz(vil.center) - xz(v.pos));
             v.moveTarget = xz(v.pos) + away * 26.0f;
           } else {
             v.state = VState::Idle;
@@ -1128,14 +1140,14 @@ void villagersUpdate(World& world, float dt) {
           v.state = VState::Idle;
           v.stateTimer = 1.0f;
         } else {
-          steer(world, i, dt);
+          steer(world, vil, vi, i, dt);
         }
         break;
       case VState::Work:
         // Worship is a continuous circling dance, not a timed cycle: the
         // dancer orbits the totem, generating mana and sustaining belief.
-        if (v.job == Job::Worshipper && world.village.centerIdx >= 0) {
-          const Building& totem = world.village.buildings[world.village.centerIdx];
+        if (v.job == Job::Worshipper && vil.centerIdx >= 0) {
+          const Building& totem = vil.buildings[vil.centerIdx];
           v.danceAngle += tune::kWorshipDanceRate * dt;
           glm::vec2 ring = xz(totem.pos) +
                            glm::vec2(std::sin(v.danceAngle), std::cos(v.danceAngle)) *
@@ -1145,9 +1157,9 @@ void villagersUpdate(World& world, float dt) {
           v.pos.y = world.terrain.heightAt(v.pos.x, v.pos.z);
           v.yaw = std::atan2(totem.pos.x - v.pos.x, totem.pos.z - v.pos.z);
           v.walkPhase += dt * 4.2f;
-          if (world.temple.founded) {
-            float mult = (0.5f + 1.5f * world.village.belief) *
-                         world.village.centerManaMultiplier();
+          if (vil.owner == 0 && world.temple.founded) {
+            float mult = (0.5f + 1.5f * vil.belief) *
+                         vil.centerManaMultiplier();
             float add = tune::kManaPerWorshipperPerDay * mult * dayFrac;
             float space = world.temple.manaMax - world.temple.mana;
             if (add <= space) {
@@ -1155,26 +1167,26 @@ void villagersUpdate(World& world, float dt) {
             } else {
               // Pool full: the overflow charges a Miracle Dispenser instead.
               world.temple.mana = world.temple.manaMax;
-              for (Building& b : world.village.buildings) {
+              for (Building& b : vil.buildings) {
                 if (b.type != BuildingType::Dispenser || b.stage != 3) continue;
-                world.village.dispenserFill += add - space;
-                while (world.village.dispenserFill >= tune::kFoodMiracleCost &&
+                vil.dispenserFill += add - space;
+                while (vil.dispenserFill >= tune::kFoodMiracleCost &&
                        b.charges < tune::kDispenserMaxCharges) {
-                  world.village.dispenserFill -= tune::kFoodMiracleCost;
+                  vil.dispenserFill -= tune::kFoodMiracleCost;
                   ++b.charges;
                 }
                 break;
               }
             }
           }
-          world.village.belief = std::min(
-              1.0f, world.village.belief + tune::kBeliefFromWorshipPerDay * dayFrac);
+          vil.belief = std::min(
+              1.0f, vil.belief + tune::kBeliefFromWorshipPerDay * dayFrac);
           break;
         }
         v.workTimer -= dt;
         // Builders hammering advance the site continuously.
         if (v.job == Job::Builder && v.targetBuilding >= 0 && v.carriedProp < 0) {
-          Building& b = world.village.buildings[v.targetBuilding];
+          Building& b = vil.buildings[v.targetBuilding];
           if (b.stage >= 0 && b.stage < 3 && b.woodDelivered >= b.woodCost &&
               glm::distance(xz(b.pos), xz(v.pos)) < 4.5f) {
             b.buildProgress += dt;
@@ -1188,21 +1200,21 @@ void villagersUpdate(World& world, float dt) {
               v.state = VState::Idle;
               v.stateTimer = 0.5f;
               v.targetBuilding = -1;
-              world.village.onBuildingComplete(world, done);
+              vil.onBuildingComplete(world, done);
             }
             // (onBuildingComplete homes only the living - the dead keep
             // no beds.)
           }
         }
         if (v.state == VState::Work && v.workTimer <= 0.0f)
-          workCycleComplete(world, i);
+          workCycleComplete(world, vil, vi, i);
         break;
       case VState::Eat:
         v.stateTimer -= dt;
         if (v.stateTimer <= 0.0f) {
-          if (world.village.food > 0) {
-            --world.village.food;
-            ++world.village.mealsEaten;
+          if (vil.food > 0) {
+            --vil.food;
+            ++vil.mealsEaten;
             v.hunger = tune::kHungerAfterMeal;
           }
           v.state = VState::Idle;
@@ -1223,7 +1235,7 @@ void villagersUpdate(World& world, float dt) {
       case VState::Sleep:
         break;
       default:
-        if (isWalking(v.state)) steer(world, i, dt);
+        if (isWalking(v.state)) steer(world, vil, vi, i, dt);
         break;
     }
 
@@ -1245,20 +1257,31 @@ void villagersUpdate(World& world, float dt) {
   }
 }
 
-void villagerGrabbed(World& world, int idx) {
-  Villager& v = world.village.villagers[idx];
+}  // namespace
+
+void villagersUpdate(World& world, float dt) {
+  for (std::size_t v = 0; v < world.villages.size(); ++v)
+    if (world.villages[v].founded)
+      updateVillage(world, world.villages[v], static_cast<int>(v), dt);
+}
+
+void villagerGrabbed(World& world, int villageIdx, int idx) {
+  Village& vil = world.villages[villageIdx];
+  Villager& v = vil.villagers[idx];
   v.held = true;
   v.inside = false;
   v.state = VState::Held;
   dropCargo(world, v);
-  releaseClaims(world, v, idx);
+  releaseClaims(world, vil, villageIdx, idx, v);
   v.fear = 1.0f;
   v.pendingAssign = false;
-  world.village.notifyDivineEvent(v.pos, 0.55f, tune::kAweGrab);
+  world.notifyDivineEvent(v.pos, 0.55f, tune::kAweGrab);
 }
 
-void villagerReleased(World& world, int idx, const glm::vec3& velocity, bool gentle) {
-  Villager& v = world.village.villagers[idx];
+void villagerReleased(World& world, int villageIdx, int idx,
+                      const glm::vec3& velocity, bool gentle) {
+  Village& vil = world.villages[villageIdx];
+  Villager& v = vil.villagers[idx];
   v.held = false;
   v.state = VState::Airborne;
   glm::vec3 vel = velocity;
@@ -1274,7 +1297,7 @@ void villagerReleased(World& world, int idx, const glm::vec3& velocity, bool gen
     glm::vec3 spinAxis = glm::cross(
         glm::normalize(vel + glm::vec3(0, 0.001f, 0)), glm::vec3(0, 1, 0));
     v.angVel = spinAxis * std::min(speed * 0.12f, 5.0f);
-    world.village.notifyDivineEvent(v.pos, 0.8f, tune::kAweThrow);
+    world.notifyDivineEvent(v.pos, 0.8f, tune::kAweThrow);
   }
 }
 
@@ -1292,23 +1315,27 @@ GrabTarget pickTarget(const World& world, const glm::vec3& origin,
     out.index = prop;
   }
 
-  for (std::size_t i = 0; i < world.village.villagers.size(); ++i) {
-    const Villager& v = world.village.villagers[i];
-    if (!v.alive || v.held || v.inside) continue;
-    glm::vec3 center = v.pos + glm::vec3(0, 0.95f * v.scale, 0);
-    float r = 1.05f * v.scale;
-    glm::vec3 oc = origin - center;
-    float b = glm::dot(oc, dir);
-    float c = glm::dot(oc, oc) - r * r;
-    float disc = b * b - c;
-    if (disc < 0.0f) continue;
-    float t = -b - std::sqrt(disc);
-    // Villagers win near-ties: grabbing the person you point at matters more
-    // than the tree behind them.
-    if (t > 0.0f && t < bestT * 1.15f && t < maxDist) {
-      bestT = std::min(t, bestT);
-      out.kind = GrabTarget::Kind::Villager;
-      out.index = static_cast<int>(i);
+  for (std::size_t vi = 0; vi < world.villages.size(); ++vi) {
+    const Village& vil = world.villages[vi];
+    for (std::size_t i = 0; i < vil.villagers.size(); ++i) {
+      const Villager& v = vil.villagers[i];
+      if (!v.alive || v.held || v.inside) continue;
+      glm::vec3 center = v.pos + glm::vec3(0, 0.95f * v.scale, 0);
+      float r = 1.05f * v.scale;
+      glm::vec3 oc = origin - center;
+      float b = glm::dot(oc, dir);
+      float c = glm::dot(oc, oc) - r * r;
+      float disc = b * b - c;
+      if (disc < 0.0f) continue;
+      float t = -b - std::sqrt(disc);
+      // Villagers win near-ties: grabbing the person you point at matters
+      // more than the tree behind them.
+      if (t > 0.0f && t < bestT * 1.15f && t < maxDist) {
+        bestT = std::min(t, bestT);
+        out.kind = GrabTarget::Kind::Villager;
+        out.village = static_cast<int>(vi);
+        out.index = static_cast<int>(i);
+      }
     }
   }
   return out;

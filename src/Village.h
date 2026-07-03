@@ -59,6 +59,9 @@ struct FarmCell {
 class Village {
  public:
   bool founded = false;
+  // -1 = neutral, 0 = the player god. (M4 formalizes gods; the field exists
+  // now so ownership logic lands in one place.)
+  int owner = -1;
   glm::vec3 center{0.0f};
   float radius = 32.0f;          // flattened terrace / footprint radius
 
@@ -87,11 +90,12 @@ class Village {
   int centerIdx = -1, storageIdx = -1, campfireIdx = -1;
   float dispenserFill = 0.0f;  // mana overflow accumulating toward a charge
 
-  // Founding: site selection (3-pass relax-then-terraform, never regenerate),
-  // terrain flattening, building/field/fishing layout. Runs inside
-  // World::generate between terrain gen and prop scatter.
-  void plan(World& world, std::uint32_t seed);
-  void spawnVillagers(World& world, std::uint32_t seed);
+  // Founding at a chosen site: terrain flattening, building/field/fishing
+  // layout. Runs inside World::generate between terrain gen and prop scatter
+  // (World picks the sites).
+  void plan(World& world, std::uint32_t seed, glm::vec2 site, bool terraformHard);
+  // Neutral villages spawn no Worshipper (they have no god to dance for).
+  void spawnVillagers(World& world, std::uint32_t seed, int villageIdx);
 
   // Per-frame settlement step: crop growth, construction stage advance,
   // opening new sites, and the dawn tick (population growth).

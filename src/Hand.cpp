@@ -9,12 +9,13 @@ namespace {
 
 // Position and carry radius of whatever the hand holds.
 glm::vec3& heldPos(World& world, const GrabTarget& g) {
-  if (g.isVillager()) return world.village.villagers[g.index].pos;
+  if (g.isVillager()) return world.villages[g.village].villagers[g.index].pos;
   return world.props[g.index].pos;
 }
 
 float heldRadius(const World& world, const GrabTarget& g) {
-  if (g.isVillager()) return 1.0f * world.village.villagers[g.index].scale;
+  if (g.isVillager())
+    return 1.0f * world.villages[g.village].villagers[g.index].scale;
   return world.props[g.index].radius;
 }
 
@@ -76,16 +77,17 @@ void Hand::update(float dt, const glm::vec3& rayOrigin, const glm::vec3& rayDir,
     // The hand can only act inside the god's influence: outside the rings it
     // can look, but nothing highlights and nothing can be grabbed.
     if (!hover.none()) {
-      const glm::vec3& tp = hover.isVillager()
-                                ? world.village.villagers[hover.index].pos
-                                : world.props[hover.index].pos;
+      const glm::vec3& tp =
+          hover.isVillager()
+              ? world.villages[hover.village].villagers[hover.index].pos
+              : world.props[hover.index].pos;
       if (!world.insideInfluence(tp)) hover.clear();
     }
     if (hover.isProp()) {
       const Prop& p = world.props[hover.index];
       targetPos = p.pos + glm::vec3(0, p.radius * 0.6f + 0.7f, 0);
     } else if (hover.isVillager()) {
-      const Villager& v = world.village.villagers[hover.index];
+      const Villager& v = world.villages[hover.village].villagers[hover.index];
       targetPos = v.pos + glm::vec3(0, 2.0f * v.scale + 0.6f, 0);
     } else {
       targetPos = groundPoint + glm::vec3(0, 0.35f, 0);
@@ -107,7 +109,7 @@ bool Hand::tryGrab(World& world) {
     p.carrier = -1;  // snatched out of a villager's arms, possibly
     p.claimedBy = -1;
   } else {
-    villagerGrabbed(world, held.index);
+    villagerGrabbed(world, held.village, held.index);
   }
   mode = Mode::Carry;
   throwVel_ = glm::vec3(0.0f);
@@ -149,32 +151,36 @@ void Hand::release(World& world) {
   }
 
   if (held.isVillager()) {
-    Villager& vg = world.village.villagers[held.index];
+    Villager& vg = world.villages[held.village].villagers[held.index];
     if (gentle) {
       // Set them down on their feet just above the ground.
       float ground = world.terrain.heightAt(vg.pos.x, vg.pos.z);
       vg.pos.y = std::max(ground, Terrain::WATER_LEVEL - 1.0f) + 0.5f;
-      villagerReleased(world, held.index, v * 0.4f, true);
+      villagerReleased(world, held.village, held.index, v * 0.4f, true);
     } else {
-      villagerReleased(world, held.index, v, false);
+      villagerReleased(world, held.village, held.index, v, false);
     }
   } else {
     const float kMaxThrowSpeed = 70.0f;
     if (speed > kMaxThrowSpeed) v *= kMaxThrowSpeed / speed;
     int idx = held.index;
     world.throwProp(idx, v);
-    // Gentle placement over the storage pad deposits resources immediately -
-    // a gift from the god, and the village believes a little more for it.
+    // Gentle placement over a storage pad deposits resources immediately -
+    // a gift from the god, and that village believes a little more for it.
     Prop& p = world.props[idx];
-    if (gentle && world.village.founded && world.village.inStorageRadius(p.pos) &&
-        (p.type == PropType::Log || p.type == PropType::Food ||
-         p.type == PropType::Tree)) {
-      world.village.absorbProp(world, idx);
-      world.village.notifyDivineEvent(p.pos, 0.0f, tune::kAweGift);
+    if (gentle && (p.type == PropType::Log || p.type == PropType::Food ||
+                   p.type == PropType::Tree)) {
+      for (Village& vlg : world.villages) {
+        if (!vlg.founded || !vlg.inStorageRadius(p.pos)) continue;
+        vlg.absorbProp(world, idx);
+        world.notifyDivineEvent(p.pos, 0.0f, tune::kAweGift);
+        break;
+      }
     }
-    // The god personally laying a body to rest at the graveyard buries it.
-    if (gentle && p.type == PropType::Body && world.village.founded) {
-      world.village.buryBody(world, idx);
+    // The god personally laying a body to rest at a graveyard buries it.
+    if (gentle && p.type == PropType::Body) {
+      for (Village& vlg : world.villages)
+        if (vlg.founded && vlg.buryBody(world, idx)) break;
     }
   }
 

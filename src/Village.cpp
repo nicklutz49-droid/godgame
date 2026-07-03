@@ -37,74 +37,18 @@ void Village::addField(glm::vec2 center2, glm::vec2 half, noise::XorShift* rng) 
   }
 }
 
-void Village::plan(World& world, std::uint32_t seed) {
+void Village::plan(World& world, std::uint32_t seed, glm::vec2 site,
+                   bool terraformHard) {
   Terrain& terrain = world.terrain;
   rng_ = seed * 2654435761u + 97u;
 
-  auto flatnessAt = [&](float x, float z) {
-    float sum = 0.0f;
-    for (int j = -2; j <= 2; ++j)
-      for (int i = -2; i <= 2; ++i)
-        sum += terrain.normalAt(x + static_cast<float>(i) * 6.0f,
-                                z + static_cast<float>(j) * 6.0f).y;
-    return sum / 25.0f;
-  };
-  auto coastDist = [&](float x, float z) {
-    for (float d = 10.0f; d <= 140.0f; d += 10.0f)
-      for (const glm::vec2& dir : kDirs8)
-        if (terrain.heightAt(x + dir.x * d, z + dir.y * d) < 0.0f) return d;
-    return 999.0f;
-  };
-
-  struct Candidate {
-    float score = -1.0e9f;
-    float x = 0.0f, z = 0.0f;
-  };
-  auto scan = [&](float minFlat, float maxCoast) {
-    Candidate best;
-    const float lim = Terrain::SIZE * 0.42f;
-    for (float z = -lim; z <= lim; z += 8.0f) {
-      for (float x = -lim; x <= lim; x += 8.0f) {
-        float h = terrain.heightAt(x, z);
-        if (h < 2.5f || h > 14.0f) continue;
-        float flat = flatnessAt(x, z);
-        if (flat < minFlat) continue;
-        float coast = coastDist(x, z);
-        if (coast > maxCoast) continue;
-        float forest = noise::fbm(x * 0.016f, z * 0.016f, 3, seed + 31u);
-        float score = flat * 3.0f + forest * 1.2f + (1.0f - coast / maxCoast) -
-                      std::abs(h - 5.0f) * 0.08f;
-        if (score > best.score) best = {score, x, z};
-      }
-    }
-    return best;
-  };
-
-  // Three-pass hostile-island policy: strict -> relaxed -> terraform harder.
-  // Never regenerate: "seed 1234" must stay this island.
-  Candidate site = scan(0.93f, 80.0f);
-  bool terraformHard = false;
-  if (site.score < -1.0e8f) site = scan(0.86f, 130.0f);
-  if (site.score < -1.0e8f) {
-    terraformHard = true;
-    const float lim = Terrain::SIZE * 0.42f;
-    for (float z = -lim; z <= lim; z += 8.0f) {
-      for (float x = -lim; x <= lim; x += 8.0f) {
-        float h = terrain.heightAt(x, z);
-        float score = (h > 0.5f ? 5.0f - std::abs(h - 6.0f) * 0.3f : h) +
-                      flatnessAt(x, z) * 2.0f;
-        if (score > site.score) site = {score, x, z};
-      }
-    }
-  }
-
-  float targetH = std::clamp(terrain.heightAt(site.x, site.z), 2.5f, 12.0f);
-  terrain.flattenDisc(site.x, site.z, radius, targetH, terraformHard ? 1.0f : 0.88f);
+  float targetH = std::clamp(terrain.heightAt(site.x, site.y), 2.5f, 12.0f);
+  terrain.flattenDisc(site.x, site.y, radius, targetH, terraformHard ? 1.0f : 0.88f);
   // The field sits at the terrace edge - level its rectangle too, before any
   // building height is snapped.
-  glm::vec2 fieldC = glm::vec2(site.x, site.z) + kDirs8[2] * 20.0f;
+  glm::vec2 fieldC = site + kDirs8[2] * 20.0f;
   terrain.flattenDisc(fieldC.x, fieldC.y, 18.0f, targetH, 1.0f);
-  center = glm::vec3(site.x, terrain.heightAt(site.x, site.z), site.z);
+  center = glm::vec3(site.x, terrain.heightAt(site.x, site.y), site.y);
   founded = true;
 
   // --- layout on the terrace (positions snapped to the flattened ground) ---
@@ -164,20 +108,26 @@ void Village::plan(World& world, std::uint32_t seed) {
 
   wood = tune::kStartWood;
   food = tune::kStartFood;
-  belief = tune::kBeliefStart;
+  belief = owner == 0 ? tune::kBeliefStart : tune::kNeutralBeliefStart;
 }
 
-void Village::spawnVillagers(World& world, std::uint32_t seed) {
+void Village::spawnVillagers(World& world, std::uint32_t seed, int villageIdx) {
   villagers.clear();
   if (!founded) return;
-  XorShift rng(seed ^ 0xC0FFEE11u);
-  const Job starterJobs[8] = {Job::Forester, Job::Farmer,     Job::Fisherman,
-                              Job::Builder,  Job::Worshipper, Job::None,
+  XorShift rng(seed ^ (0xC0FFEE11u + static_cast<std::uint32_t>(villageIdx) * 7919u));
+  // Neutral villages spawn no Worshipper - they have no god to dance for.
+  const Job ownedJobs[8] = {Job::Forester, Job::Farmer,     Job::Fisherman,
+                            Job::Builder,  Job::Worshipper, Job::None,
+                            Job::None,     Job::None};
+  const Job neutralJobs[8] = {Job::Forester, Job::Farmer, Job::Fisherman,
+                              Job::Builder,  Job::None,   Job::None,
                               Job::None,     Job::None};
+  const Job* starterJobs = owner == 0 ? ownedJobs : neutralJobs;
   glm::vec3 fire = campfirePos();
   for (int i = 0; i < tune::kStartPopulation; ++i) {
     Villager v;
-    v.rng = seed * 1000003u + static_cast<std::uint32_t>(i) * 2654435761u + 1u;
+    v.rng = seed * 1000003u +
+            static_cast<std::uint32_t>(i + villageIdx * 131) * 2654435761u + 1u;
     glm::vec2 p = xz(fire) + kDirs8[i % 8] * rng.range(3.0f, 6.5f);
     v.pos = glm::vec3(p.x, world.terrain.heightAt(p.x, p.y), p.y);
     v.yaw = rng.range(0.0f, 6.2831f);
@@ -209,7 +159,8 @@ void Village::step(World& world, float dt) {
         glm::distance(xz(p.pos), xz(center)) < 60.0f)
       decay += tune::kCorpseBeliefPerDay;
   }
-  belief = std::max(tune::kBeliefFloor, belief - decay * dayFrac);
+  float floor = owner == 0 ? tune::kBeliefFloor : tune::kNeutralBeliefFloor;
+  belief = std::max(floor, belief - decay * dayFrac);
 
   for (FarmCell& c : farmCells) {
     c.tendedTimer = std::max(0.0f, c.tendedTimer - dt);

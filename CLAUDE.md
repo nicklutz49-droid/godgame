@@ -5,7 +5,15 @@ All art is procedural placeholder; original B&W assets may be wired in later
 behind the existing interfaces (Terrain, Mesh). Personal project, no
 distribution. Slices so far: living village (docs/plan-villagers.md),
 worship/belief/mana/temple + food miracle (docs/plan-worship.md), scaffolds &
-the building roster (docs/plan-scaffolds.md). Master arc: docs/plan-game.md.
+the building roster (docs/plan-scaffolds.md), mortality & burial, multi-
+village worlds with neutrals. Master arc: docs/plan-game.md (next: M4 gods &
+conversion).
+
+Multi-village invariants: `World::villages[0]` is the player's home village;
+indices are stable for the session. Prop `claimedBy`/`carrier` store packed
+cross-village ids from `villagerId(village, index)`; farm-cell claims stay
+village-local. Divine acts route through `World::notifyDivineEvent` (all
+villages); only owned villages (owner == 0) project influence or feed mana.
 
 ## Build & test
 
