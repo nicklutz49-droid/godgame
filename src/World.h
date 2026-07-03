@@ -99,6 +99,41 @@ class World {
   void generate(std::uint32_t seed, int godCount = 1);
   void update(float dt);
 
+  // --- editor verbs (M6): the author's hand. Sim-side, deterministic,
+  // reusing the founding paths - maps never fork world-building logic. ---
+
+  // A blank flat island: no villages, no props, the player god waiting.
+  void buildBlank(std::uint32_t seed);
+
+  // Activate a god (idempotent): starter mana, AI flag for rivals.
+  void wakeGod(int god);
+
+  // Found a village through the standard path (plan + spawn + preset stores
+  // + god wake). terraform=false is the map-load path: the heightfield
+  // already carries the terraces. No placement checks - the spec is truth.
+  int foundVillageFromSpec(glm::vec2 site, int owner, int preset, bool terraform);
+
+  // Found a village at `site` (owner -1 neutral / god id; preset 0..2 =
+  // small/medium/large population and stores). Requires land and
+  // kEditorVillageSeparation from existing villages; returns index or -1.
+  // Owning gods wake (rivals with their AI).
+  int editorPlaceVillage(glm::vec2 site, int owner, int preset);
+
+  // Seat (or move) `god`'s temple: flattens a pad, faces the god's nearest
+  // village, and wakes the god.
+  void editorPlaceTemple(int god, glm::vec2 pos);
+
+  // Plant a deterministic cluster of trees / rocks under the brush
+  // (collision-checked against props, villages, temples).
+  void editorPaintForest(glm::vec2 center, float radius);
+  void editorPaintRocks(glm::vec2 center, float radius);
+
+  // Remove trees/rocks/stumps under the brush; returns how many.
+  int editorEraseProps(glm::vec2 center, float radius);
+
+  // Re-seat props, buildings, and villagers on freshly sculpted ground.
+  void editorSnapToGround(glm::vec2 center, float radius);
+
   // An active god with no villages left is broken: its AI goes still and its
   // worship income is gone. (The temple-collapse ceremony arrives with M7.)
   bool godBroken(int god) const;
@@ -177,4 +212,5 @@ class World {
 
   std::uint32_t seed_ = 1;
   std::uint32_t miracleCounter_ = 0;
+  std::uint32_t editStroke_ = 0;  // seeds the paint brushes' determinism
 };

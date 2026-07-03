@@ -62,6 +62,9 @@ class Village {
   bool founded = false;
   // -1 = neutral, otherwise the owning god's id.
   int owner = -1;
+  // Editor size preset (0 small / 1 medium / 2 large) - static authoring
+  // config, saved into map files, never touched by the sim.
+  int startPreset = 1;
   glm::vec3 center{0.0f};
   float radius = 32.0f;          // flattened terrace / footprint radius
 
@@ -97,9 +100,14 @@ class Village {
   // Founding at a chosen site: terrain flattening, building/field/fishing
   // layout. Runs inside World::generate between terrain gen and prop scatter
   // (World picks the sites).
-  void plan(World& world, std::uint32_t seed, glm::vec2 site, bool terraformHard);
+  // terraform=false (map loading) skips the terrace flattening - the saved
+  // heightfield already carries it, and layout reads post-flatten ground.
+  void plan(World& world, std::uint32_t seed, glm::vec2 site, bool terraformHard,
+            bool terraform = true);
   // Neutral villages spawn no Worshipper (they have no god to dance for).
-  void spawnVillagers(World& world, std::uint32_t seed, int villageIdx);
+  // `count` overrides the population (editor size presets); <= 0 = default.
+  void spawnVillagers(World& world, std::uint32_t seed, int villageIdx,
+                      int count = 0);
 
   // Per-frame settlement step: crop growth, construction stage advance,
   // opening new sites, and the dawn tick (population growth).

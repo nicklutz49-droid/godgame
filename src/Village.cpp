@@ -38,16 +38,20 @@ void Village::addField(glm::vec2 center2, glm::vec2 half, noise::XorShift* rng) 
 }
 
 void Village::plan(World& world, std::uint32_t seed, glm::vec2 site,
-                   bool terraformHard) {
+                   bool terraformHard, bool terraform) {
   Terrain& terrain = world.terrain;
   rng_ = seed * 2654435761u + 97u;
 
-  float targetH = std::clamp(terrain.heightAt(site.x, site.y), 2.5f, 12.0f);
-  terrain.flattenDisc(site.x, site.y, radius, targetH, terraformHard ? 1.0f : 0.88f);
-  // The field sits at the terrace edge - level its rectangle too, before any
-  // building height is snapped.
+  // The field sits at the terrace edge; its rectangle is leveled too, before
+  // any building height is snapped. Map loading skips the terraforming (the
+  // saved heightfield already carries these terraces) so layout decisions -
+  // all made AFTER the flattening - read identical ground either way.
   glm::vec2 fieldC = site + kDirs8[2] * 20.0f;
-  terrain.flattenDisc(fieldC.x, fieldC.y, 18.0f, targetH, 1.0f);
+  if (terraform) {
+    float targetH = std::clamp(terrain.heightAt(site.x, site.y), 2.5f, 12.0f);
+    terrain.flattenDisc(site.x, site.y, radius, targetH, terraformHard ? 1.0f : 0.88f);
+    terrain.flattenDisc(fieldC.x, fieldC.y, 18.0f, targetH, 1.0f);
+  }
   center = glm::vec3(site.x, terrain.heightAt(site.x, site.y), site.y);
   founded = true;
 
@@ -112,9 +116,11 @@ void Village::plan(World& world, std::uint32_t seed, glm::vec2 site,
   if (owner >= 0) belief[owner] = tune::kBeliefStart;
 }
 
-void Village::spawnVillagers(World& world, std::uint32_t seed, int villageIdx) {
+void Village::spawnVillagers(World& world, std::uint32_t seed, int villageIdx,
+                             int count) {
   villagers.clear();
   if (!founded) return;
+  if (count <= 0) count = tune::kStartPopulation;
   XorShift rng(seed ^ (0xC0FFEE11u + static_cast<std::uint32_t>(villageIdx) * 7919u));
   // Neutral villages spawn no Worshipper - they have no god to dance for.
   const Job ownedJobs[8] = {Job::Forester, Job::Farmer,     Job::Fisherman,
@@ -125,7 +131,7 @@ void Village::spawnVillagers(World& world, std::uint32_t seed, int villageIdx) {
                               Job::None,     Job::None};
   const Job* starterJobs = owner >= 0 ? ownedJobs : neutralJobs;
   glm::vec3 fire = campfirePos();
-  for (int i = 0; i < tune::kStartPopulation; ++i) {
+  for (int i = 0; i < count; ++i) {
     Villager v;
     v.rng = seed * 1000003u +
             static_cast<std::uint32_t>(i + villageIdx * 131) * 2654435761u + 1u;
@@ -136,7 +142,7 @@ void Village::spawnVillagers(World& world, std::uint32_t seed, int villageIdx) {
     v.variant = static_cast<int>(rng.next() % 3u);
     v.hunger = rng.range(0.1f, 0.45f);
     v.thinkTimer = tune::kThinkInterval * (static_cast<float>(i) + 1.0f) /
-                   static_cast<float>(tune::kStartPopulation);
+                   static_cast<float>(count);
     villagers.push_back(v);
     villagers.back().home = findHomeFor(i);
   }

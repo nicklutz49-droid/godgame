@@ -10,7 +10,34 @@ screen is procedural placeholder art. There is no creature, by design.
 ![The temple](docs/temple.png)
 ![The island](docs/island.png)
 
-## Current slice: the rival god
+## Current slice: the map editor
+
+Handcrafted worlds (design: [docs/plan-editor.md](docs/plan-editor.md)). Press
+**Tab** and time freezes — the island becomes clay:
+
+![The editor](docs/editor.png)
+
+- **Sculpting**: raise, lower, flatten, and smooth brushes (`1`-`4`, `[` `]`
+  for size) reshape the heightfield live; nearby props, buildings, and
+  villagers re-seat on the new ground. Forest and rock brushes (`5`, `6`)
+  plant; the eraser (`7`) clears.
+- **Founding**: click villages into being (`8`) — `G` cycles the owner
+  (you / the rival / neutral), `V` the size (small / medium / large
+  population and stores). Seat temples with `9`. Placing a rival village or
+  temple wakes the rival god, AI and all: a skirmish map is just a map that
+  contains an opponent.
+- **Frozen, honest authoring**: the sim halts in the editor; toggling either
+  way rebuilds the world from the map, so playtests never dirty your map and
+  every playtest is a fresh deterministic start. `N` starts from a blank
+  flat island, `R` still rerolls a procedural one.
+- **Map files**: `F5`/`F9` save/load `maps/slot<N>.gmap` (`F6` cycles
+  slots), `--map file.gmap` plays any map, `--editor` boots straight into
+  authoring. A `.gmap` is a *starting condition* — heightfield plus entity
+  specs — and loading one rebuilds the world through the exact founding
+  paths the generator uses: **a loaded map is bit-for-bit the world that was
+  saved**, and save → load → save is byte-identical.
+
+## Previous slice: the rival god
 
 A second god plays the island (design: [docs/plan-rival.md](docs/plan-rival.md)).
 Every new world is a **skirmish** now (`--no-rival` for the peaceful sandbox):
@@ -199,6 +226,7 @@ hard landings stun instead. The mortality seams are in place for later.
 | `M` | Food miracle at the cursor (30 mana, inside influence) |
 | `T` | Advance time of day |
 | `R` | Generate a new island |
+| `Tab` | **Map editor** (frozen time; `1-9` tools, `[` `]` brush, `G` owner, `V` size, `N` blank island, `F5`/`F9`/`F6` map slots) |
 | `F2` | Wireframe |
 | `Esc` | Quit |
 
@@ -237,10 +265,13 @@ The first configure downloads and builds SDL2; later builds are fast.
 godgame                       play a skirmish against the rival god
 godgame --no-rival            peaceful sandbox, no opponent
 godgame --seed 1234           play a specific island
+godgame --editor              boot straight into the map editor
+godgame --map file.gmap       play (or, with --editor, edit) a map file
 godgame --headless [steps]    no window: world-gen, physics, village economy,
-                              hand-interaction, rival-AI and determinism self-tests
+                              hand-interaction, rival-AI, map round-trip and
+                              determinism self-tests
 godgame --match [days]        no window: AI-vs-AI skirmish, day-by-day war report
-godgame --screenshot out.bmp [frames] [far|close|village|night|temple|rival|roster]
+godgame --screenshot out.bmp [frames] [far|close|village|night|temple|rival|editor|roster]
 ```
 
 ## Roadmap
@@ -256,7 +287,8 @@ in [docs/plan-game.md](docs/plan-game.md). The short version:
 3. ✅ Many villages (neutrals, the big multi-village refactor)
 4. ✅ Gods & conversion (per-god belief, the ownership ratchet)
 5. ✅ The rival AI god (fully symmetric, an embodied enemy hand)
-6. In-game map editor ← next → 7. skirmish shell → 8. balance — then story mode
+6. ✅ In-game map editor (sculpt, plant, found, save/load .gmap)
+7. Skirmish shell ← next → 8. balance — then story mode
 
 Also on the list: more miracles, original B&W asset loaders, sound.
 
@@ -282,5 +314,6 @@ src/
   Villagers.*    villager AI: priority ladder, job loops, steering, poses
   Hand.*         the divine hand: hover, grab, carry, throw, assign
   GodAI.*        the rival god: governor/strategos/executor, embodied AI hand
+  MapFile.*      .gmap map files: starting conditions, byte-stable round-trip
   Tuning.h       every gameplay constant
 ```

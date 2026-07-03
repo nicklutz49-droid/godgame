@@ -136,6 +136,18 @@ inline constexpr float kAiManaReserve = 15.0f;   // keep this much after courtin
 inline constexpr int kAiWorshippersPer = 8;      // +1 worshipper per N villagers
 inline constexpr float kAiAggression = 0.35f;    // chance a spare gift targets YOU
 
+// --- the map editor (M6) ---
+inline constexpr int kEditorPresetPop[3] = {5, 8, 12};    // small/medium/large
+inline constexpr int kEditorPresetFood[3] = {15, 25, 40};
+inline constexpr int kEditorPresetWood[3] = {2, 4, 8};
+inline constexpr float kEditorVillageSeparation = 60.0f;  // author freedom > 130
+inline constexpr float kEditorBrushMin = 4.0f;
+inline constexpr float kEditorBrushMax = 60.0f;
+inline constexpr float kEditorRaiseRate = 9.0f;    // m/s at full strength
+inline constexpr float kEditorFlattenRate = 4.0f;  // strength/s toward anchor
+inline constexpr float kEditorSmoothRate = 5.0f;
+inline constexpr float kEditorPaintPeriod = 0.12f; // s between plant ticks
+
 // --- mortality (M2: the seams are live) ---
 inline constexpr bool kVillagersInvulnerable = false;
 inline constexpr float kLethalImpactSpeed = 26.0f;  // impact above this kills

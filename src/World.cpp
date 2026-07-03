@@ -155,6 +155,208 @@ bool World::godBroken(int god) const {
   return true;
 }
 
+void World::buildBlank(std::uint32_t seed) {
+  seed_ = seed;
+  miracleCounter_ = 0;
+  editStroke_ = 0;
+  terrain.generateBlank(seed);
+  villages.clear();
+  props.clear();
+  for (God& g : gods) g = God{};
+  gods[0].active = true;
+  gods[0].isPlayer = true;
+  gods[0].mana = tune::kManaStart;
+  gods[0].manaMax = tune::kManaMax;
+  dayCycle = DayCycle{};
+  handPos = glm::vec3(0.0f, 1.0e9f, 0.0f);
+  handSpeed = 0.0f;
+  obstacleGrid_.assign(kObstacleGridN * kObstacleGridN, {});
+  for (int g = 0; g < tune::kMaxGods; ++g) ai[g].reset(*this, g);
+}
+
+void World::wakeGod(int god) {
+  if (god < 0 || god >= tune::kMaxGods) return;
+  God& g = gods[god];
+  if (g.active) return;
+  g.active = true;
+  g.isPlayer = god == 0;
+  g.mana = tune::kManaStart;
+  g.manaMax = tune::kManaMax;
+  if (god != 0) g.ai = true;
+  ai[god].reset(*this, god);
+}
+
+int World::foundVillageFromSpec(glm::vec2 site, int owner, int preset,
+                                bool terraform) {
+  int idx = static_cast<int>(villages.size());
+  villages.emplace_back();
+  Village& v = villages.back();
+  v.owner = std::clamp(owner, -1, tune::kMaxGods - 1);
+  v.startPreset = std::clamp(preset, 0, 2);
+  v.plan(*this, seed_ + static_cast<std::uint32_t>(idx) * 7919u, site, false,
+         terraform);
+  v.spawnVillagers(*this, seed_, idx, tune::kEditorPresetPop[v.startPreset]);
+  v.food = tune::kEditorPresetFood[v.startPreset];
+  v.wood = tune::kEditorPresetWood[v.startPreset];
+  if (v.owner >= 0) wakeGod(v.owner);
+  return idx;
+}
+
+int World::editorPlaceVillage(glm::vec2 site, int owner, int preset) {
+  if (terrain.heightAt(site.x, site.y) < 1.5f) return -1;
+  for (const Village& v : villages)
+    if (v.founded &&
+        glm::distance(glm::vec2(v.center.x, v.center.z), site) <
+            tune::kEditorVillageSeparation)
+      return -1;
+  return foundVillageFromSpec(site, owner, preset, true);
+}
+
+void World::editorPlaceTemple(int god, glm::vec2 pos) {
+  if (god < 0 || god >= tune::kMaxGods) return;
+  God& g = gods[god];
+  float targetH = std::clamp(terrain.heightAt(pos.x, pos.y), 2.5f, 14.0f);
+  terrain.flattenDisc(pos.x, pos.y, 16.0f, targetH, 0.95f);
+  g.temple.founded = true;
+  g.temple.pos = glm::vec3(pos.x, terrain.heightAt(pos.x, pos.y), pos.y);
+  // Face the god's nearest village (or the island heart on an empty map).
+  glm::vec2 face(0.0f);
+  float best = 1.0e9f;
+  for (const Village& v : villages) {
+    if (!v.founded || v.owner != god) continue;
+    float d = glm::distance(glm::vec2(v.center.x, v.center.z), pos);
+    if (d < best) {
+      best = d;
+      face = glm::vec2(v.center.x, v.center.z);
+    }
+  }
+  g.temple.yaw = std::atan2(face.x - pos.x, face.y - pos.y);
+  wakeGod(god);
+  ai[god].reset(*this, god);
+}
+
+void World::editorPaintForest(glm::vec2 center, float radius) {
+  XorShift rng(seed_ ^ (0xF0537u + (++editStroke_) * 2654435761u));
+  int want = 1 + static_cast<int>(radius / 7.0f);
+  for (int attempt = 0; attempt < 24 && want > 0; ++attempt) {
+    glm::vec2 p = center + glm::vec2(rng.range(-radius, radius),
+                                     rng.range(-radius, radius));
+    if (glm::distance(p, center) > radius) continue;
+    float h = terrain.heightAt(p.x, p.y);
+    if (h < 1.8f || terrain.normalAt(p.x, p.y).y < 0.75f) continue;
+    bool blocked = false;
+    for (const Prop& q : props) {
+      if (!q.alive) continue;
+      if (q.type != PropType::Tree && q.type != PropType::Rock &&
+          q.type != PropType::Stump)
+        continue;
+      if (glm::distance(glm::vec2(q.pos.x, q.pos.z), p) < 3.5f) blocked = true;
+    }
+    for (const Village& v : villages)
+      blocked |= v.founded && v.insideFootprint(p.x, p.y);
+    for (const God& g : gods)
+      blocked |= g.temple.founded &&
+                 glm::distance(glm::vec2(g.temple.pos.x, g.temple.pos.z), p) < 18.0f;
+    if (blocked) continue;
+
+    Prop t;
+    t.type = PropType::Tree;
+    t.variant = static_cast<int>(rng.next() % 3u);
+    t.scale = rng.range(0.8f, 1.35f);
+    t.radius = 1.6f * t.scale;
+    t.baseYaw = rng.range(0.0f, 6.2831f);
+    t.resource = static_cast<float>(tune::kChopSwings);
+    t.pos = glm::vec3(p.x, 0.0f, p.y);
+    t.pos.y = restHeight(t);
+    t.rot = glm::angleAxis(t.baseYaw, glm::vec3(0, 1, 0));
+    spawnProp(t);
+    --want;
+  }
+}
+
+void World::editorPaintRocks(glm::vec2 center, float radius) {
+  XorShift rng(seed_ ^ (0x50CC5u + (++editStroke_) * 2654435761u));
+  int want = 1 + static_cast<int>(radius / 14.0f);
+  for (int attempt = 0; attempt < 18 && want > 0; ++attempt) {
+    glm::vec2 p = center + glm::vec2(rng.range(-radius, radius),
+                                     rng.range(-radius, radius));
+    if (glm::distance(p, center) > radius) continue;
+    if (terrain.heightAt(p.x, p.y) < -3.0f) continue;  // shallows are fine
+    bool blocked = false;
+    for (const Prop& q : props) {
+      if (!q.alive) continue;
+      if (q.type != PropType::Tree && q.type != PropType::Rock &&
+          q.type != PropType::Stump)
+        continue;
+      if (glm::distance(glm::vec2(q.pos.x, q.pos.z), p) < 2.5f) blocked = true;
+    }
+    for (const Village& v : villages)
+      blocked |= v.founded && v.insideFootprint(p.x, p.y);
+    for (const God& g : gods)
+      blocked |= g.temple.founded &&
+                 glm::distance(glm::vec2(g.temple.pos.x, g.temple.pos.z), p) < 18.0f;
+    if (blocked) continue;
+
+    Prop r;
+    r.type = PropType::Rock;
+    r.variant = static_cast<int>(rng.next() % 3u);
+    r.scale = rng.range(0.55f, 2.0f);
+    r.radius = 0.9f * r.scale;
+    r.baseYaw = rng.range(0.0f, 6.2831f);
+    r.pos = glm::vec3(p.x, 0.0f, p.y);
+    r.pos.y = restHeight(r);
+    r.rot = glm::angleAxis(r.baseYaw, glm::vec3(0, 1, 0));
+    spawnProp(r);
+    --want;
+  }
+}
+
+int World::editorEraseProps(glm::vec2 center, float radius) {
+  int erased = 0;
+  for (Prop& p : props) {
+    if (!p.alive || p.held || p.carrier >= 0) continue;
+    if (p.type != PropType::Tree && p.type != PropType::Rock &&
+        p.type != PropType::Stump)
+      continue;
+    if (glm::distance(glm::vec2(p.pos.x, p.pos.z), center) > radius) continue;
+    p.alive = false;
+    p.claimedBy = -1;
+    ++erased;
+  }
+  return erased;
+}
+
+void World::editorSnapToGround(glm::vec2 center, float radius) {
+  float pad = radius + 8.0f;
+  for (Prop& p : props) {
+    if (!p.alive || p.held || p.carrier >= 0) continue;
+    if (glm::distance(glm::vec2(p.pos.x, p.pos.z), center) > pad) continue;
+    p.pos.y = restHeight(p);
+    p.vel = glm::vec3(0.0f);
+    p.asleep = true;
+  }
+  for (Village& v : villages) {
+    if (!v.founded) continue;
+    for (Building& b : v.buildings) {
+      if (glm::distance(glm::vec2(b.pos.x, b.pos.z), center) > pad) continue;
+      b.pos.y = terrain.heightAt(b.pos.x, b.pos.z);
+    }
+    for (Villager& p : v.villagers) {
+      if (!p.alive || p.held || p.inside) continue;
+      if (glm::distance(glm::vec2(p.pos.x, p.pos.z), center) > pad) continue;
+      p.pos.y = terrain.heightAt(p.pos.x, p.pos.z);
+    }
+    if (glm::distance(glm::vec2(v.center.x, v.center.z), center) <= pad)
+      v.center.y = terrain.heightAt(v.center.x, v.center.z);
+  }
+  for (God& g : gods) {
+    if (!g.temple.founded) continue;
+    if (glm::distance(glm::vec2(g.temple.pos.x, g.temple.pos.z), center) > pad)
+      continue;
+    g.temple.pos.y = terrain.heightAt(g.temple.pos.x, g.temple.pos.z);
+  }
+}
+
 void World::foundTemple(int god, int villageIdx) {
   if (villageIdx < 0 || villageIdx >= static_cast<int>(villages.size()) ||
       !villages[villageIdx].founded)

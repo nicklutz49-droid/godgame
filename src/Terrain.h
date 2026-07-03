@@ -20,9 +20,27 @@ class Terrain {
 
   void generate(std::uint32_t seed);
 
+  // A blank flat starter island for authoring from nothing (M6): a build
+  // plateau ringed by beach falling away to the seabed. Deterministic.
+  void generateBlank(std::uint32_t seed);
+
   // Gently terrace an area toward targetH (village founding). Must run before
   // the render mesh is built; heightAt/normalAt/raycast agree automatically.
   void flattenDisc(float cx, float cz, float radius, float targetH, float strength);
+
+  // --- editor brushes (M6): sim-side, deterministic, stats kept fresh ---
+
+  // Dome the ground up (amount > 0) or down (< 0) with a smooth falloff.
+  void raiseDisc(float cx, float cz, float radius, float amount);
+
+  // Relax the disc toward its neighborhood average (erosion-ish).
+  void smoothDisc(float cx, float cz, float radius, float strength);
+
+  // Raw grid access for the map file (row-major, (GRID+1)^2 floats).
+  const std::vector<float>& heights() const { return heights_; }
+  // Replace the whole heightfield (map load). Size must match; recomputes
+  // the cached stats. The seed is stored for villager RNG streams.
+  bool setHeights(const std::vector<float>& h, std::uint32_t seed);
 
   float heightAt(float x, float z) const;   // bilinear; seabed outside bounds
   glm::vec3 normalAt(float x, float z) const;
@@ -42,6 +60,9 @@ class Terrain {
 
  private:
   float vertexHeight(int i, int j) const;
+  void refreshStats();
+  void discCells(float cx, float cz, float radius, int& i0, int& i1, int& j0,
+                 int& j1) const;
 
   std::vector<float> heights_;  // (GRID+1)^2, row-major
   std::uint32_t seed_ = 0;

@@ -4,6 +4,8 @@
 //   godgame                          interactive skirmish (a rival god plays too)
 //   godgame --no-rival               interactive sandbox, no opponent
 //   godgame --seed 1234              a specific island seed
+//   godgame --editor                 boot straight into the map editor (Tab toggles)
+//   godgame --map file.gmap          play (or, with --editor, edit) a map file
 //   godgame --headless [steps]       no window; generate + simulate + self-test
 //   godgame --match [days]           no window; AI-vs-AI skirmish, day-by-day report
 //   godgame --screenshot out.bmp [frames] [far|close|village|night|temple|rival|roster]
@@ -17,11 +19,13 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <vector>
 
 #include "Camera.h"
 #include "Hand.h"
+#include "MapFile.h"
 #include "Mesh.h"
 #include "Models.h"
 #include "Shader.h"
@@ -247,6 +251,23 @@ glm::vec3 godColor(int god) {
   return {1.0f, 1.0f, 1.0f};
 }
 
+// The editor's fixed tool set (M6). Indexed by number key - 1.
+const char* kEditorToolNames[9] = {"raise",  "lower", "flatten",
+                                   "smooth", "forest", "rocks",
+                                   "erase",  "village", "temple"};
+
+const char* editorOwnerName(int owner) {
+  if (owner == 0) return "you";
+  if (owner == 1) return "rival";
+  return "neutral";
+}
+
+const char* editorPresetName(int preset) {
+  if (preset == 0) return "small";
+  if (preset == 2) return "large";
+  return "medium";
+}
+
 // -------------------------------------------------------------------- app
 
 struct App {
@@ -293,6 +314,31 @@ struct App {
   std::vector<int> lastOwners;  // detects conversion ceremonies
   bool wasBroken[tune::kMaxGods] = {};  // detects defeat / victory
   bool rivalEnabled = true;             // --no-rival reverts to the sandbox
+
+  // --- the map editor (M6): frozen-time authoring, Tab toggles ---
+  bool editor = false;
+  int editorTool = 0;               // index into kEditorToolNames
+  float brushRadius = 14.0f;
+  float flattenAnchor = 4.0f;       // height sampled where the stroke began
+  bool sculpting = false;           // LMB held with a brush tool
+  float paintTimer = 0.0f;
+  int editorOwner = 0;              // village/temple owner (G cycles)
+  int editorPreset = 1;             // village size (V cycles)
+  int mapSlot = 1;                  // maps/slot<N>.gmap (F6 cycles)
+  std::vector<std::uint8_t> mapSnapshot;  // the authored map between toggles
+  float meshRefresh = 0.0f;         // throttles terrain re-upload while sculpting
+  bool terrainDirty = false;
+  Mesh brushRing;
+
+  void toggleEditor();
+  void editorFrame(float dt);
+  void editorClick();
+  void syncWorldBuffers();
+  void onWorldRebuilt();
+  bool loadMapFromFile(const std::string& path);
+  std::string mapSlotPath() const {
+    return "maps/slot" + std::to_string(mapSlot) + ".gmap";
+  }
 
   const Mesh* buildingMesh(BuildingType t);
   void refreshVillageRings();
@@ -456,7 +502,16 @@ const Mesh* App::buildingMesh(BuildingType t) {
 void App::rebuildWorld(std::uint32_t newSeed) {
   seed = newSeed;
   world.generate(seed, rivalEnabled ? 2 : 1);
+  mapSnapshot.clear();  // a rerolled island abandons the authored map
+  onWorldRebuilt();
+}
+
+// Everything the app must refresh after the world is replaced, whatever
+// replaced it (procedural reroll, blank canvas, map load, editor toggle).
+void App::onWorldRebuilt() {
   terrainMesh.upload(world.terrain.buildMeshData());
+  terrainDirty = false;
+  sculpting = false;
   hand.mode = Hand::Mode::Free;
   hand.held.clear();
   hand.hover.clear();
@@ -475,6 +530,7 @@ void App::rebuildWorld(std::uint32_t newSeed) {
   villageRings.resize(world.villages.size());
   lastRingRadii.assign(world.villages.size(), -1.0f);
   lastRingOwners.assign(world.villages.size(), -2);
+  lastOwners.assign(world.villages.size(), -2);
   refreshVillageRings();
   int totalPop = 0;
   for (const Village& v : world.villages) totalPop += v.population();
@@ -482,6 +538,140 @@ void App::rebuildWorld(std::uint32_t newSeed) {
           seed, world.terrain.landFraction() * 100.0f, world.terrain.minHeight(),
           world.terrain.maxHeight(), world.props.size(), world.villages.size(),
           totalPop, world.gods[1].active ? " | a rival god stirs" : "");
+}
+
+// Rings and ceremony trackers must cover a village founded mid-edit.
+void App::syncWorldBuffers() {
+  villageRings.resize(world.villages.size());
+  lastRingRadii.resize(world.villages.size(), -1.0f);
+  lastRingOwners.resize(world.villages.size(), -2);
+  lastOwners.resize(world.villages.size(), -2);
+}
+
+bool App::loadMapFromFile(const std::string& path) {
+  if (!mapfile::loadFile(world, path.c_str())) return false;
+  seed = world.seed();
+  mapfile::save(world, mapSnapshot);  // normalized: this world IS the map
+  onWorldRebuilt();
+  return true;
+}
+
+void App::toggleEditor() {
+  if (!editor) {
+    // Play -> editor: restore the authored map, discarding playtest drift.
+    // The very first visit adopts the current world as the map.
+    if (mapSnapshot.empty()) mapfile::save(world, mapSnapshot);
+    mapfile::load(world, mapSnapshot.data(), mapSnapshot.size());
+  } else {
+    // Editor -> play: this world IS the map; play a fresh start of it.
+    mapfile::save(world, mapSnapshot);
+    mapfile::load(world, mapSnapshot.data(), mapSnapshot.size());
+  }
+  editor = !editor;
+  onWorldRebuilt();
+  if (editor) {
+    SDL_Log("-- MAP EDITOR -- time is frozen");
+    SDL_Log("   1-9 tools (%s..%s) | [ ] brush size | LMB apply/place",
+            kEditorToolNames[0], kEditorToolNames[8]);
+    SDL_Log("   G owner | V village size | N blank island | R new island");
+    SDL_Log("   F5 save, F9 load %s | F6 next slot | Tab to play", mapSlotPath().c_str());
+  } else {
+    SDL_Log("-- PLAY -- a fresh start of the authored map (Tab returns to the editor)");
+  }
+}
+
+// One frozen-time editor frame: brush sizing, held-button application, and
+// the throttled terrain mesh refresh.
+void App::editorFrame(float dt) {
+  const Uint8* keys = SDL_GetKeyboardState(nullptr);
+  if (keys[SDL_SCANCODE_LEFTBRACKET])
+    brushRadius = std::max(tune::kEditorBrushMin, brushRadius - 30.0f * dt);
+  if (keys[SDL_SCANCODE_RIGHTBRACKET])
+    brushRadius = std::min(tune::kEditorBrushMax, brushRadius + 30.0f * dt);
+
+  if (sculpting && hand.hasGround) {
+    float cx = hand.groundPoint.x, cz = hand.groundPoint.z;
+    glm::vec2 c2(cx, cz);
+    switch (editorTool) {
+      case 0:  // raise
+        world.terrain.raiseDisc(cx, cz, brushRadius, tune::kEditorRaiseRate * dt);
+        terrainDirty = true;
+        break;
+      case 1:  // lower
+        world.terrain.raiseDisc(cx, cz, brushRadius, -tune::kEditorRaiseRate * dt);
+        terrainDirty = true;
+        break;
+      case 2:  // flatten toward the stroke's anchor height
+        world.terrain.flattenDisc(cx, cz, brushRadius, flattenAnchor,
+                                  std::min(1.0f, tune::kEditorFlattenRate * dt));
+        terrainDirty = true;
+        break;
+      case 3:  // smooth
+        world.terrain.smoothDisc(cx, cz, brushRadius,
+                                 tune::kEditorSmoothRate * dt);
+        terrainDirty = true;
+        break;
+      case 4:  // forest
+      case 5:  // rocks
+        paintTimer -= dt;
+        if (paintTimer <= 0.0f) {
+          paintTimer += tune::kEditorPaintPeriod;
+          if (editorTool == 4)
+            world.editorPaintForest(c2, brushRadius);
+          else
+            world.editorPaintRocks(c2, brushRadius);
+        }
+        break;
+      case 6:  // erase
+        world.editorEraseProps(c2, brushRadius);
+        break;
+      default:
+        break;
+    }
+    if (editorTool <= 3) world.editorSnapToGround(c2, brushRadius);
+  } else {
+    paintTimer = 0.0f;
+  }
+
+  meshRefresh -= dt;
+  if (terrainDirty && meshRefresh <= 0.0f) {
+    terrainMesh.upload(world.terrain.buildMeshData());
+    meshRefresh = 0.12f;
+    terrainDirty = false;
+  }
+}
+
+// A single editor click: found a village / seat a temple under the cursor.
+void App::editorClick() {
+  if (!hand.hasGround) return;
+  glm::vec2 c2(hand.groundPoint.x, hand.groundPoint.z);
+  if (editorTool == 7) {
+    int idx = world.editorPlaceVillage(c2, editorOwner, editorPreset);
+    if (idx >= 0) {
+      syncWorldBuffers();
+      terrainMesh.upload(world.terrain.buildMeshData());  // founding terraces
+      SDL_Log("Village founded (%s, %s) - %zu on the island",
+              editorOwnerName(editorOwner), editorPresetName(editorPreset),
+              world.villages.size());
+    } else {
+      SDL_Log("No room for a village here (needs land and %.0f m clearance)",
+              tune::kEditorVillageSeparation);
+    }
+  } else if (editorTool == 8) {
+    if (world.terrain.heightAt(c2.x, c2.y) < 1.5f) {
+      SDL_Log("A temple needs dry land");
+      return;
+    }
+    int god = editorOwner == 1 ? 1 : 0;
+    world.editorPlaceTemple(god, c2);
+    terrainMesh.upload(world.terrain.buildMeshData());  // the flattened pad
+    const Temple& t = world.gods[god].temple;
+    templeRings[god].upload(buildRingMeshData(world.terrain,
+                                              glm::vec2(t.pos.x, t.pos.z),
+                                              tune::kTempleInfluence,
+                                              godColor(god)));
+    SDL_Log("Temple seated for %s", editorOwnerName(god));
+  }
 }
 
 // Owned villages project their god's rings, growing with belief; rebuild each
@@ -524,7 +714,17 @@ void App::handleEvent(const SDL_Event& e) {
       break;
     case SDL_MOUSEBUTTONDOWN:
       if (e.button.button == SDL_BUTTON_LEFT) {
-        if (!hand.tryGrab(world) && hand.hasGround) {
+        if (editor) {
+          // Brush tools drag; village/temple place on the click.
+          if (editorTool <= 6) {
+            sculpting = true;
+            if (editorTool == 2 && hand.hasGround)
+              flattenAnchor = world.terrain.heightAt(hand.groundPoint.x,
+                                                     hand.groundPoint.z);
+          } else {
+            editorClick();
+          }
+        } else if (!hand.tryGrab(world) && hand.hasGround) {
           panning = true;
           grabPoint = hand.groundPoint;
         }
@@ -534,7 +734,8 @@ void App::handleEvent(const SDL_Event& e) {
       break;
     case SDL_MOUSEBUTTONUP:
       if (e.button.button == SDL_BUTTON_LEFT) {
-        if (hand.mode == Hand::Mode::Carry) {
+        sculpting = false;
+        if (!editor && hand.mode == Hand::Mode::Carry) {
           hand.release(world);
           SDL_Log("release speed %.1f (%s)", hand.lastReleaseSpeed,
                   hand.lastReleaseSpeed < tune::kPlaceSpeed ? "place" : "throw");
@@ -565,6 +766,9 @@ void App::handleEvent(const SDL_Event& e) {
         case SDLK_ESCAPE:
           quit = true;
           break;
+        case SDLK_TAB:
+          toggleEditor();
+          break;
         case SDLK_F2:
           wireframe = !wireframe;
           break;
@@ -575,12 +779,76 @@ void App::handleEvent(const SDL_Event& e) {
           simSpeed = simSpeed == 1 ? 4 : (simSpeed == 4 ? 16 : 1);
           SDL_Log("sim speed x%d", simSpeed);
           break;
+        case SDLK_1:
+        case SDLK_2:
+        case SDLK_3:
+        case SDLK_4:
+        case SDLK_5:
+        case SDLK_6:
+        case SDLK_7:
+        case SDLK_8:
+        case SDLK_9:
+          if (editor) {
+            editorTool = e.key.keysym.sym - SDLK_1;
+            sculpting = false;
+            SDL_Log("tool: %s", kEditorToolNames[editorTool]);
+          }
+          break;
+        case SDLK_g:
+          if (editor) {
+            editorOwner = editorOwner == 0 ? 1 : (editorOwner == 1 ? -1 : 0);
+            if (editorTool == 8 && editorOwner == -1) editorOwner = 0;
+            SDL_Log("owner: %s", editorOwnerName(editorOwner));
+          }
+          break;
+        case SDLK_v:
+          if (editor) {
+            editorPreset = (editorPreset + 1) % 3;
+            SDL_Log("village size: %s", editorPresetName(editorPreset));
+          }
+          break;
+        case SDLK_n:
+          if (editor) {
+            seed = seed * 1664525u + 1013904223u;
+            world.buildBlank(seed);
+            mapfile::save(world, mapSnapshot);
+            onWorldRebuilt();
+            SDL_Log("A blank island. Author away.");
+          }
+          break;
+        case SDLK_F5:
+          if (editor) {
+            std::error_code ec;
+            std::filesystem::create_directories("maps", ec);
+            if (mapfile::saveFile(world, mapSlotPath().c_str()))
+              SDL_Log("Saved %s", mapSlotPath().c_str());
+            else
+              SDL_Log("Could not write %s", mapSlotPath().c_str());
+          }
+          break;
+        case SDLK_F9:
+          if (editor) {
+            if (loadMapFromFile(mapSlotPath()))
+              SDL_Log("Loaded %s", mapSlotPath().c_str());
+            else
+              SDL_Log("No map in %s", mapSlotPath().c_str());
+          }
+          break;
+        case SDLK_F6:
+          if (editor) {
+            mapSlot = mapSlot % 4 + 1;
+            bool there = std::filesystem::exists(mapSlotPath());
+            SDL_Log("map slot %d%s", mapSlot, there ? " (occupied)" : " (empty)");
+          }
+          break;
         case SDLK_t:
-          world.dayCycle.t += 0.02f;
-          world.dayCycle.t -= std::floor(world.dayCycle.t);
+          if (!editor) {
+            world.dayCycle.t += 0.02f;
+            world.dayCycle.t -= std::floor(world.dayCycle.t);
+          }
           break;
         case SDLK_k:
-          if (hand.hasGround && !world.villages.empty()) {
+          if (!editor && hand.hasGround && !world.villages.empty()) {
             Villager v;
             v.pos = hand.groundPoint;
             v.pos.y = world.terrain.heightAt(v.pos.x, v.pos.z);
@@ -591,11 +859,13 @@ void App::handleEvent(const SDL_Event& e) {
           }
           break;
         case SDLK_l:
-          world.home().wood += 10;
-          world.home().food += 10;
+          if (!editor && !world.villages.empty()) {
+            world.home().wood += 10;
+            world.home().food += 10;
+          }
           break;
         case SDLK_m:
-          if (hand.hasGround) {
+          if (!editor && hand.hasGround) {
             if (world.castFoodMiracle(hand.groundPoint)) {
               effects.push_back({hand.groundPoint, 0.0f});
               SDL_Log("food miracle! mana %.0f/%.0f", world.gods[0].mana,
@@ -687,34 +957,41 @@ void App::update(float dt) {
   world.handSpeed = dt > 0.0001f ? glm::distance(hand.pos, prevHandPos) / dt : 0.0f;
   prevHandPos = hand.pos;
 
-  // F4 time-lapse scales the sim only; camera and hand stay real-time.
-  for (int step = 0; step < simSpeed; ++step) world.update(dt);
+  if (editor) {
+    // Time is frozen in the editor: brushes instead of the sim.
+    editorFrame(dt);
+  } else {
+    // F4 time-lapse scales the sim only; camera and hand stay real-time.
+    for (int step = 0; step < simSpeed; ++step) world.update(dt);
+  }
 
   refreshVillageRings();
 
-  // Conversion ceremonies: a pulse and a headline when a village changes gods.
-  if (lastOwners.size() != world.villages.size())
-    lastOwners.assign(world.villages.size(), -2);
-  for (std::size_t v = 0; v < world.villages.size(); ++v) {
-    int owner = world.villages[v].owner;
-    if (lastOwners[v] != -2 && lastOwners[v] != owner) {
-      effects.push_back({world.villages[v].center, 0.0f});
-      SDL_Log(owner == 0 ? "A village has joined your faith!"
-                         : "A village has fallen to the rival god!");
+  if (!editor) {
+    // Conversion ceremonies: a pulse and a headline when a village changes gods.
+    if (lastOwners.size() != world.villages.size())
+      lastOwners.assign(world.villages.size(), -2);
+    for (std::size_t v = 0; v < world.villages.size(); ++v) {
+      int owner = world.villages[v].owner;
+      if (lastOwners[v] != -2 && lastOwners[v] != owner) {
+        effects.push_back({world.villages[v].center, 0.0f});
+        SDL_Log(owner == 0 ? "A village has joined your faith!"
+                           : "A village has fallen to the rival god!");
+      }
+      lastOwners[v] = owner;
     }
-    lastOwners[v] = owner;
-  }
 
-  // Defeat and victory (the full ceremony arrives with the skirmish shell).
-  for (int g = 0; g < tune::kMaxGods; ++g) {
-    bool broken = world.godBroken(g);
-    if (broken && !wasBroken[g]) {
-      if (g == 0)
-        SDL_Log("Your last village has fallen. The island forgets you...");
-      else
-        SDL_Log("The rival god is broken - its hand hangs still. The island is yours!");
+    // Defeat and victory (the full ceremony arrives with the skirmish shell).
+    for (int g = 0; g < tune::kMaxGods; ++g) {
+      bool broken = world.godBroken(g);
+      if (broken && !wasBroken[g]) {
+        if (g == 0)
+          SDL_Log("Your last village has fallen. The island forgets you...");
+        else
+          SDL_Log("The rival god is broken - its hand hangs still. The island is yours!");
+      }
+      wasBroken[g] = broken;
     }
-    wasBroken[g] = broken;
   }
 
   for (CastEffect& e : effects) e.age += dt;
@@ -1104,6 +1381,46 @@ void App::render(float time) {
       if (ring.valid()) ring.draw();
   }
 
+  // Editor overlay: the brush ring cursor and placement ghosts.
+  if (editor && hand.hasGround) {
+    glm::vec2 c2(hand.groundPoint.x, hand.groundPoint.z);
+    glm::vec3 ringColor(1.0f);  // terrain tools: white
+    if (editorTool == 4) ringColor = glm::vec3(0.45f, 0.85f, 0.40f);   // forest
+    if (editorTool == 5) ringColor = glm::vec3(0.62f, 0.60f, 0.58f);   // rocks
+    if (editorTool == 6) ringColor = glm::vec3(1.0f, 0.35f, 0.30f);    // erase
+    if (editorTool == 7) ringColor = godColor(editorOwner);            // white if neutral
+    if (editorTool == 8) ringColor = godColor(editorOwner == 1 ? 1 : 0);
+    float r = editorTool == 7 ? 32.0f : (editorTool == 8 ? 16.0f : brushRadius);
+    brushRing.upload(buildRingMeshData(world.terrain, c2, r, ringColor));
+    lit.set("uModel", glm::mat4(1.0f));
+    lit.set("uAlpha", 0.55f);
+    lit.set("uEmissive", 0.5f);
+    brushRing.draw();
+
+    // Village / temple ghost at the cursor.
+    const Mesh* ghost = editorTool == 7 ? &totemMesh
+                                        : (editorTool == 8 ? &templeMesh : nullptr);
+    if (ghost) {
+      bool valid = world.terrain.heightAt(c2.x, c2.y) > 1.5f;
+      if (editorTool == 7)
+        for (const Village& v : world.villages)
+          valid &= !v.founded ||
+                   glm::distance(glm::vec2(v.center.x, v.center.z), c2) >=
+                       tune::kEditorVillageSeparation;
+      lit.set("uTint", valid ? glm::vec3(0.55f, 1.0f, 0.55f)
+                             : glm::vec3(1.0f, 0.40f, 0.40f));
+      lit.set("uEmissive", 0.55f);
+      lit.set("uAlpha", 0.45f);
+      lit.set("uModel",
+              glm::translate(glm::mat4(1.0f),
+                             glm::vec3(c2.x, world.terrain.heightAt(c2.x, c2.y),
+                                       c2.y)));
+      ghost->draw();
+      lit.set("uTint", glm::vec3(1.0f));
+      lit.set("uEmissive", 1.0f);
+    }
+  }
+
   // Scaffold placement ghost: what this stack becomes, and whether it fits.
   {
     int heldStack = hand.heldScaffoldCount(world);
@@ -1212,19 +1529,21 @@ void App::render(float time) {
     (brain.held.none() ? handOpen : handClosed).draw();
   }
   lit.set("uTint", glm::vec3(1.0f));
-  float handScale = std::clamp(cam.distance * 0.045f, 1.2f, 8.0f);
-  glm::mat4 handModel = glm::translate(glm::mat4(1.0f), hand.pos) *
-                        glm::rotate(glm::mat4(1.0f), cam.yaw, glm::vec3(0, 1, 0)) *
-                        glm::rotate(glm::mat4(1.0f), -0.30f, glm::vec3(1, 0, 0)) *
-                        glm::scale(glm::mat4(1.0f), glm::vec3(handScale));
-  lit.set("uModel", handModel);
-  // Outside the god's influence the hand turns ghostly - look, don't touch.
-  const bool reach = !hand.hasGround || world.insideInfluence(hand.groundPoint);
-  lit.set("uTint", reach ? glm::vec3(1.0f) : glm::vec3(0.55f, 0.62f, 0.82f));
-  lit.set("uAlpha", reach ? 0.95f : 0.45f);
-  lit.set("uEmissive", 0.35f);
-  const bool closed = hand.mode == Hand::Mode::Carry || panning;
-  (closed ? handClosed : handOpen).draw();
+  if (!editor) {  // the editor's cursor is the brush ring, not the hand
+    float handScale = std::clamp(cam.distance * 0.045f, 1.2f, 8.0f);
+    glm::mat4 handModel = glm::translate(glm::mat4(1.0f), hand.pos) *
+                          glm::rotate(glm::mat4(1.0f), cam.yaw, glm::vec3(0, 1, 0)) *
+                          glm::rotate(glm::mat4(1.0f), -0.30f, glm::vec3(1, 0, 0)) *
+                          glm::scale(glm::mat4(1.0f), glm::vec3(handScale));
+    lit.set("uModel", handModel);
+    // Outside the god's influence the hand turns ghostly - look, don't touch.
+    const bool reach = !hand.hasGround || world.insideInfluence(hand.groundPoint);
+    lit.set("uTint", reach ? glm::vec3(1.0f) : glm::vec3(0.55f, 0.62f, 0.82f));
+    lit.set("uAlpha", reach ? 0.95f : 0.45f);
+    lit.set("uEmissive", 0.35f);
+    const bool closed = hand.mode == Hand::Mode::Carry || panning;
+    (closed ? handClosed : handOpen).draw();
+  }
   lit.set("uTint", glm::vec3(1.0f));
   lit.set("uAlpha", 1.0f);
   lit.set("uEmissive", 0.0f);
@@ -1246,6 +1565,7 @@ int App::runInteractive() {
   SDL_Log("  M                    food miracle at the cursor (30 mana, inside influence)");
   SDL_Log("  Drop a villager on the totem to make a Worshipper - worship fills your mana");
   SDL_Log("  R new island   T advance time   F2 wireframe   Esc quit");
+  SDL_Log("  Tab                  map editor (frozen time, brushes, map slots)");
   SDL_Log("  Debug: F3 state tint   F4 sim speed   K spawn villager   L +10 res");
 
   Uint64 prev = SDL_GetPerformanceCounter();
@@ -1270,15 +1590,27 @@ int App::runInteractive() {
     fpsTimer += dt;
     ++fpsFrames;
     if (fpsTimer >= 0.5f) {
-      char title[160];
-      int pop = 0;
-      for (const Village& v : world.villages) pop += v.population();
-      std::snprintf(title, sizeof(title),
-                    "godgame - %.0f fps | pop %d  wood %d  food %d | mana %.0f  "
-                    "belief %.0f%% | day %.2f",
-                    fpsFrames / fpsTimer, pop, world.home().wood,
-                    world.home().food, world.gods[0].mana,
-                    world.home().belief[0] * 100.0f, world.dayCycle.t);
+      char title[200];
+      if (editor) {
+        std::snprintf(title, sizeof(title),
+                      "godgame EDITOR - %s | brush %.0f m | owner: %s | "
+                      "village size: %s | slot %d | %zu villages | Tab to play",
+                      kEditorToolNames[editorTool], brushRadius,
+                      editorOwnerName(editorOwner), editorPresetName(editorPreset),
+                      mapSlot, world.villages.size());
+      } else {
+        int pop = 0;
+        for (const Village& v : world.villages) pop += v.population();
+        int wood = world.villages.empty() ? 0 : world.home().wood;
+        int food = world.villages.empty() ? 0 : world.home().food;
+        float belief =
+            world.villages.empty() ? 0.0f : world.home().belief[0] * 100.0f;
+        std::snprintf(title, sizeof(title),
+                      "godgame - %.0f fps | pop %d  wood %d  food %d | mana %.0f  "
+                      "belief %.0f%% | day %.2f",
+                      fpsFrames / fpsTimer, pop, wood, food, world.gods[0].mana,
+                      belief, world.dayCycle.t);
+      }
       SDL_SetWindowTitle(window, title);
       fpsTimer = 0.0f;
       fpsFrames = 0;
@@ -1318,6 +1650,15 @@ int App::runScreenshot(const std::string& path, int frames, const std::string& v
     cam.focus = focus;
     cam.distance = 95.0f;
     cam.yaw = 1.1f;
+  } else if (view == "editor") {
+    // The authoring view: frozen world, village tool ghost under the cursor.
+    toggleEditor();
+    editorTool = 7;
+    editorOwner = 1;
+    cam.focus = world.villages.empty() ? glm::vec3(0.0f) : world.home().center;
+    cam.focus += glm::vec3(40.0f, 0.0f, 40.0f);
+    cam.distance = 110.0f;
+    cam.yaw = 2.0f;
   } else if (view == "roster") {
     // A model-viewer scene: every scaffold-built building in a row, plus
     // scaffold stacks, so the whole roster can be eyeballed at once.
@@ -2230,6 +2571,117 @@ int runHeadless(std::uint32_t seed, int steps) {
     check(warActs > 0, "the gods actually played");
   }
 
+  // [14] Maps & the editor: blank canvases, the author's verbs, and .gmap
+  // files that rebuild the exact same world through the founding paths.
+  std::printf("[14] maps & the editor\n");
+  {
+    // A blank island: flat build plateau, beach ring, nobody home.
+    World wb;
+    wb.buildBlank(seed);
+    check(wb.villages.empty() && wb.props.empty(), "a blank island is empty");
+    check(std::abs(wb.terrain.heightAt(0.0f, 0.0f) - 5.0f) < 0.25f,
+          "a flat plateau at the heart");
+    check(wb.terrain.heightAt(Terrain::SIZE * 0.49f, 0.0f) < 0.0f, "sea at the rim");
+    check(wb.terrain.normalAt(20.0f, 20.0f).y > 0.999f, "the plateau is level");
+    check(wb.gods[0].active && !wb.gods[1].active, "only you await");
+
+    // Terrain brushes.
+    float before = wb.terrain.heightAt(60.0f, 0.0f);
+    wb.terrain.raiseDisc(60.0f, 0.0f, 20.0f, 6.0f);
+    check(wb.terrain.heightAt(60.0f, 0.0f) > before + 5.0f, "raise lifts the ground");
+    wb.terrain.raiseDisc(60.0f, 0.0f, 20.0f, -6.0f);
+    check(std::abs(wb.terrain.heightAt(60.0f, 0.0f) - before) < 0.01f,
+          "lower undoes it exactly");
+    wb.terrain.raiseDisc(-40.0f, 0.0f, 10.0f, 5.0f);
+    float bump = wb.terrain.heightAt(-40.0f, 0.0f);
+    for (int s = 0; s < 8; ++s) wb.terrain.smoothDisc(-40.0f, 0.0f, 14.0f, 0.8f);
+    check(wb.terrain.heightAt(-40.0f, 0.0f) < bump - 0.5f, "smooth relaxes a bump");
+
+    // Vegetation brushes and the eraser.
+    auto countType = [&](const World& w, PropType t) {
+      int n = 0;
+      for (const Prop& p : w.props)
+        if (p.alive && p.type == t) ++n;
+      return n;
+    };
+    for (int s = 0; s < 12; ++s) wb.editorPaintForest(glm::vec2(30.0f, 30.0f), 16.0f);
+    for (int s = 0; s < 6; ++s) wb.editorPaintRocks(glm::vec2(30.0f, -30.0f), 14.0f);
+    int trees = countType(wb, PropType::Tree), rocks = countType(wb, PropType::Rock);
+    std::printf("      painted %d trees, %d rocks\n", trees, rocks);
+    check(trees > 3, "the forest brush plants trees");
+    check(rocks > 0, "the rock brush drops boulders");
+    int erased = wb.editorEraseProps(glm::vec2(30.0f, 0.0f), 80.0f);
+    check(erased == trees + rocks &&
+              countType(wb, PropType::Tree) + countType(wb, PropType::Rock) == 0,
+          "the eraser clears everything under it");
+
+    // Villages and temples by the author's hand.
+    int v0 = wb.editorPlaceVillage(glm::vec2(0.0f, 0.0f), 0, 2);
+    check(v0 == 0 && wb.villages[0].founded, "a village founds at a click");
+    check(wb.villages[0].population() == tune::kEditorPresetPop[2],
+          "a large village's people");
+    check(wb.villages[0].food == tune::kEditorPresetFood[2] &&
+              wb.villages[0].wood == tune::kEditorPresetWood[2],
+          "a large village's stores");
+    check(wb.editorPlaceVillage(glm::vec2(10.0f, 0.0f), 1, 0) < 0,
+          "too close to found another");
+    int v1 = wb.editorPlaceVillage(glm::vec2(80.0f, 0.0f), 1, 0);
+    check(v1 == 1 && wb.villages[1].owner == 1,
+          "the rival's village founds beyond the clearance");
+    check(wb.gods[1].active && wb.gods[1].ai,
+          "placing a rival village wakes the rival");
+    check(wb.villages[1].population() == tune::kEditorPresetPop[0],
+          "a small village's people");
+    wb.editorPlaceTemple(0, glm::vec2(-60.0f, 0.0f));
+    check(wb.gods[0].temple.founded, "a temple seats at a click");
+
+    // Round-trip: a generated skirmish world -> buffer -> worlds, bit for bit.
+    World w0;
+    w0.generate(seed, 2);
+    std::vector<std::uint8_t> buf;
+    mapfile::save(w0, buf);
+    std::printf("      map buffer %.0f KB\n", static_cast<float>(buf.size()) / 1024.0f);
+    World wl1, wl2;
+    check(mapfile::load(wl1, buf.data(), buf.size()), "the map loads");
+    check(mapfile::load(wl2, buf.data(), buf.size()), "and loads again");
+    check(worldChecksum(wl1) == worldChecksum(wl2), "two loads match bit-for-bit");
+    check(worldChecksum(wl1) == worldChecksum(w0),
+          "and match the world that was saved");
+    std::vector<std::uint8_t> buf2;
+    mapfile::save(wl1, buf2);
+    check(buf == buf2, "save -> load -> save is byte-stable");
+
+    // A loaded map is a playable, deterministic skirmish.
+    const float dtm = 1.0f / 60.0f;
+    for (int s = 0; s < 600; ++s) {
+      wl1.update(dtm);
+      wl2.update(dtm);
+    }
+    check(worldChecksum(wl1) == worldChecksum(wl2),
+          "loaded maps play deterministically");
+    bool finite = true;
+    int alive = 0;
+    for (const Village& v : wl1.villages)
+      for (const Villager& p : v.villagers) {
+        if (p.alive) ++alive;
+        finite &= std::isfinite(p.pos.x) && std::isfinite(p.pos.y) &&
+                  std::isfinite(p.pos.z);
+      }
+    check(alive > 0 && finite, "its people live on solid ground");
+
+    // The hand-authored blank map round-trips its own way home too.
+    std::vector<std::uint8_t> hb;
+    mapfile::save(wb, hb);
+    World wh;
+    check(mapfile::load(wh, hb.data(), hb.size()), "an authored map loads");
+    check(wh.villages.size() == wb.villages.size() && wh.gods[1].active &&
+              wh.gods[0].temple.founded,
+          "with its villages, its temple, and its rival");
+    check(worldChecksum(wh) == worldChecksum(wb),
+          "the authored world survives the file exactly");
+    check(!mapfile::load(wh, hb.data(), hb.size() / 2), "a truncated file is refused");
+  }
+
   // [6] Three-day economy & schedule soak. Days are shrunk to 240 s - short
   // enough to simulate fast, long enough that walking/chopping (real-time
   // actions) still fit inside a work day.
@@ -2385,9 +2837,11 @@ int main(int argc, char** argv) {
   bool headless = false;
   bool rival = true;
   bool match = false;
+  bool editor = false;
   int matchDays = 10;
   int headlessSteps = 900;
   std::string screenshotPath;
+  std::string mapPath;
   int screenshotFrames = 90;
   std::string screenshotView = "far";
 
@@ -2400,6 +2854,10 @@ int main(int argc, char** argv) {
       if (i + 1 < argc && argv[i + 1][0] != '-') headlessSteps = std::atoi(argv[++i]);
     } else if (arg == "--no-rival") {
       rival = false;
+    } else if (arg == "--editor") {
+      editor = true;
+    } else if (arg == "--map" && i + 1 < argc) {
+      mapPath = argv[++i];
     } else if (arg == "--match") {
       match = true;
       if (i + 1 < argc && argv[i + 1][0] != '-') matchDays = std::atoi(argv[++i]);
@@ -2421,6 +2879,13 @@ int main(int argc, char** argv) {
   app.rivalEnabled = rival;
   if (!app.initGraphics()) return 1;
   app.initScene();
+  if (!mapPath.empty()) {
+    if (app.loadMapFromFile(mapPath))
+      SDL_Log("Map loaded: %s", mapPath.c_str());
+    else
+      SDL_Log("Could not load %s - generated an island instead", mapPath.c_str());
+  }
+  if (editor) app.toggleEditor();
 
   int rc;
   if (!screenshotPath.empty())

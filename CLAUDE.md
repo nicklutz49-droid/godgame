@@ -7,8 +7,9 @@ distribution. Slices so far: living village (docs/plan-villagers.md),
 worship/belief/mana/temple + food miracle (docs/plan-worship.md), scaffolds &
 the building roster (docs/plan-scaffolds.md), mortality & burial, multi-
 village worlds with neutrals, gods & conversion (per-god belief + ownership
-ratchet), the rival AI god (docs/plan-rival.md). Master arc: docs/plan-game.md
-(next: M6 the map editor).
+ratchet), the rival AI god (docs/plan-rival.md), the map editor & .gmap files
+(docs/plan-editor.md). Master arc: docs/plan-game.md (next: M7 the skirmish
+shell).
 
 Multi-village invariants: `World::villages[0]` is the player's home village;
 indices are stable for the session. Prop `claimedBy`/`carrier` store packed
@@ -30,6 +31,18 @@ kStealOwnerBelow) — never assign `Village::owner` directly. Hand throws stamp
 clears the stamp. `insideInfluence(p, god)` is per god. The headless checksum
 covers per-god beliefs, owners, and mana — keep new god state inside it.
 
+Map invariants (M6): a `.gmap` is a STARTING CONDITION (heightfield + entity
+specs), never a mid-game save (full-state saves are M7). `mapfile::load`
+rebuilds through the standard founding paths with `plan(..., terraform=false)`
+— the saved heightfield already carries every terrace, so layout decisions
+(all made after flattening) read identical ground and a loaded map is
+bit-for-bit the world that was saved; save → load → save must stay
+byte-stable (headless test [14] enforces both). Editor mutations go through
+World editor verbs (`editorPlaceVillage`/`editorPlaceTemple`/`editorPaint*`/
+`editorEraseProps`) — sim-side, deterministic, no new spawn paths. The editor
+freezes the sim (main.cpp never calls `world.update` while `editor`), and
+toggling either direction rebuilds the world from the map snapshot.
+
 ## Build & test
 
 ```sh
@@ -39,8 +52,11 @@ xvfb-run -a ./build/godgame --screenshot /tmp/shot.bmp 120 village  # visual che
 ```
 
 The headless suite covers world gen, prop physics, thrown villagers,
-drop-to-assign, storage absorption, a 3-day economy/schedule soak, and a
-double-run determinism checksum. Keep it green; extend it with every system.
+drop-to-assign, storage absorption, worship/miracles, scaffolds, mortality,
+multi-village worlds, the conversion ratchet, the rival AI (incl. AI-vs-AI
+determinism; `--match` runs full wars), map round-trips, a 3-day
+economy/schedule soak, and a double-run determinism checksum. Keep it green;
+extend it with every system.
 
 Cross-platform (Linux dev, Windows target). CMake falls back to FetchContent
 for SDL2/glm when system packages are missing — don't add hard system deps.
