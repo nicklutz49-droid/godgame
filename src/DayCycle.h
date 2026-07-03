@@ -12,11 +12,14 @@
 // renderer.
 struct DayCycle {
   float t = 0.35f;  // day fraction; 0.25 = dawn, 0.5 = noon, 0.75 = dusk
+  int day = 1;      // counts the midnights (the HUD's "DAY N")
   float secondsPerDay = tune::kSecondsPerDay;
 
   void advance(float dt) {
     t += dt / secondsPerDay;
-    t -= std::floor(t);
+    float wraps = std::floor(t);
+    t -= wraps;
+    day += static_cast<int>(wraps);
   }
 
   static float smoothstep(float e0, float e1, float x) {

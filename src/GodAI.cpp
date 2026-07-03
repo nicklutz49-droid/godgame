@@ -222,6 +222,15 @@ void GodAI::executeRelease(World& world) {
   cooldown_ = tune::kAiActCooldown;
 }
 
+void GodAI::settle(World& world) {
+  if (!held.none()) {
+    abandon(world);
+  } else {
+    verb = Verb::None;
+    phase = Phase::Rest;
+  }
+}
+
 void GodAI::abandon(World& world) {
   if (held.isProp() && heldStillValid(world)) {
     Prop& p = world.props[held.index];

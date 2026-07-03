@@ -10,7 +10,35 @@ screen is procedural placeholder art. There is no creature, by design.
 ![The temple](docs/temple.png)
 ![The island](docs/island.png)
 
-## Current slice: the map editor
+## Current slice: the skirmish shell
+
+It's a game you launch and finish now (design:
+[docs/plan-shell.md](docs/plan-shell.md)):
+
+![The title menu](docs/menu.png)
+
+- **A menu in front of a living island** — the title screen orbits an
+  ambient skirmish while you choose: CONTINUE (newest save), SKIRMISH (random
+  island or any of your `maps/` slots), SANDBOX, EDITOR, QUIT. Arrows +
+  enter, or the mouse. `Esc` in play pauses into the same shell — quitting
+  is a menu act now.
+- **Full game saves** — `F5`/`F9` quick-save/load `saves/slot<N>.sav`
+  (`F6` cycles slots), `--load file.sav` from the CLI. Unlike a `.gmap`
+  (a starting condition), a save is the *complete* mid-game state — every
+  prop, villager, counter, god, and AI brain, private rng streams included.
+  The headless suite proves a loaded game **continues bit-for-bit like the
+  original** and that save → load → save is byte-identical. The camera
+  comes back where you left it.
+- **The war ends properly** — when a god's last village converts away, its
+  temple physically crumbles into flung rubble (grabbable wreckage, of
+  course), the island quakes, and a victory or defeat card rises. Time keeps
+  flowing afterward: stay as long as you like.
+- **The first HUD** — a tiny built-in 5×7 pixel font (procedural glyph
+  quads, no textures) draws the god's ledger (mana, population, stores,
+  belief, day) and the war line (villages held). The same font writes the
+  menus and the cards.
+
+## Previous slice: the map editor
 
 Handcrafted worlds (design: [docs/plan-editor.md](docs/plan-editor.md)). Press
 **Tab** and time freezes — the island becomes clay:
@@ -227,8 +255,9 @@ hard landings stun instead. The mortality seams are in place for later.
 | `T` | Advance time of day |
 | `R` | Generate a new island |
 | `Tab` | **Map editor** (frozen time; `1-9` tools, `[` `]` brush, `G` owner, `V` size, `N` blank island, `F5`/`F9`/`F6` map slots) |
+| `F5` / `F9` / `F6` | Quick-save / quick-load / cycle `saves/slot<N>.sav` (in play) |
 | `F2` | Wireframe |
-| `Esc` | Quit |
+| `Esc` | Pause menu (resume, save, load, main menu, quit) |
 
 Debug/tuning: `F3` tint villagers by AI state, `F4` sim speed ×1/4/16,
 `K` spawn a villager at the hand, `L` +10 wood & food. Gameplay constants
@@ -267,11 +296,12 @@ godgame --no-rival            peaceful sandbox, no opponent
 godgame --seed 1234           play a specific island
 godgame --editor              boot straight into the map editor
 godgame --map file.gmap       play (or, with --editor, edit) a map file
+godgame --load file.sav       resume a saved game
 godgame --headless [steps]    no window: world-gen, physics, village economy,
-                              hand-interaction, rival-AI, map round-trip and
-                              determinism self-tests
+                              hand-interaction, rival-AI, map/save round-trip
+                              and determinism self-tests
 godgame --match [days]        no window: AI-vs-AI skirmish, day-by-day war report
-godgame --screenshot out.bmp [frames] [far|close|village|night|temple|rival|editor|roster]
+godgame --screenshot out.bmp [frames] [far|close|village|night|temple|rival|editor|menu|roster]
 ```
 
 ## Roadmap
@@ -288,7 +318,8 @@ in [docs/plan-game.md](docs/plan-game.md). The short version:
 4. ✅ Gods & conversion (per-god belief, the ownership ratchet)
 5. ✅ The rival AI god (fully symmetric, an embodied enemy hand)
 6. ✅ In-game map editor (sculpt, plant, found, save/load .gmap)
-7. Skirmish shell ← next → 8. balance — then story mode
+7. ✅ Skirmish shell (menus, game saves, the collapse, the HUD)
+8. Balance & feel pass ← next — then story mode
 
 Also on the list: more miracles, original B&W asset loaders, sound.
 
@@ -315,5 +346,8 @@ src/
   Hand.*         the divine hand: hover, grab, carry, throw, assign
   GodAI.*        the rival god: governor/strategos/executor, embodied AI hand
   MapFile.*      .gmap map files: starting conditions, byte-stable round-trip
+  SaveFile.*     .sav game saves: the complete sim, continues bit-for-bit
+  Serial.h       little-endian byte writer/reader shared by the file formats
+  Font.*         built-in 5x7 pixel font (glyph quads, no textures)
   Tuning.h       every gameplay constant
 ```

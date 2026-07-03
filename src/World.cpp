@@ -452,10 +452,46 @@ void World::updateOwnership() {
         convertVillage(static_cast<int>(vi), best);
     } else {
       if (bestB > tune::kStealBelief &&
-          v.belief[v.owner] < tune::kStealOwnerBelow)
+          v.belief[v.owner] < tune::kStealOwnerBelow) {
+        int prevOwner = v.owner;
         convertVillage(static_cast<int>(vi), best);
+        // A god stripped of its last village is broken: the temple falls.
+        if (prevOwner >= 0 && !gods[prevOwner].ruined && godBroken(prevOwner))
+          collapseTemple(prevOwner, best);
+      }
     }
   }
+}
+
+void World::collapseTemple(int god, int conqueror) {
+  God& g = gods[god];
+  g.ruined = true;
+  g.mana = 0.0f;
+  if (!g.temple.founded) return;
+  glm::vec3 at = g.temple.pos;
+  g.temple.founded = false;
+
+  XorShift rng(seed_ ^ (0xDEAD5EEDu + static_cast<std::uint32_t>(god) * 7919u));
+  for (int k = 0; k < 10; ++k) {
+    Prop r;
+    r.type = PropType::Rock;
+    r.variant = static_cast<int>(rng.next() % 3u);
+    r.scale = rng.range(0.5f, 1.3f);
+    r.radius = 0.9f * r.scale;
+    r.baseYaw = rng.range(0.0f, 6.2831f);
+    r.rot = glm::angleAxis(r.baseYaw, glm::vec3(0, 1, 0));
+    r.pos = at + glm::vec3(rng.range(-1.6f, 1.6f), 2.5f + rng.range(0.0f, 2.2f),
+                           rng.range(-1.6f, 1.6f));
+    r.vel = glm::vec3(rng.range(-9.0f, 9.0f), rng.range(4.0f, 11.0f),
+                      rng.range(-9.0f, 9.0f));
+    r.angVel = glm::vec3(rng.range(-4.0f, 4.0f), rng.range(-4.0f, 4.0f),
+                         rng.range(-4.0f, 4.0f));
+    r.asleep = false;
+    spawnProp(r);
+  }
+  // The island quakes; the conqueror's triumph is witnessed everywhere.
+  notifyDivineEvent(-1, at, 0.6f, 0.0f);
+  if (conqueror >= 0) notifyDivineEvent(conqueror, at, 0.0f, tune::kAweMiracle);
 }
 
 void World::convertVillage(int villageIdx, int newOwner) {

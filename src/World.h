@@ -66,6 +66,7 @@ struct God {
   bool active = false;
   bool isPlayer = false;
   bool ai = false;
+  bool ruined = false;  // the temple has collapsed (last village lost)
   Temple temple;
   float mana = 0.0f;
   float manaMax = 100.0f;
@@ -201,6 +202,9 @@ class World {
 
  private:
   void foundTemple(int god, int villageIdx);
+  // A god just lost its last village: the temple crumbles into flung rubble
+  // (ordinary rock props), the island quakes, the conqueror's awe rings out.
+  void collapseTemple(int god, int conqueror);
   void scatterProps();
   std::vector<glm::vec2> findVillageSites(int count) const;
   int scaffoldHostVillage(const glm::vec3& pos, int count, int god) const;
@@ -213,4 +217,6 @@ class World {
   std::uint32_t seed_ = 1;
   std::uint32_t miracleCounter_ = 0;
   std::uint32_t editStroke_ = 0;  // seeds the paint brushes' determinism
+
+  friend struct SaveIO;  // full-state game saves restore privates (M7)
 };

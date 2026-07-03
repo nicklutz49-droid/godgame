@@ -43,6 +43,10 @@ class GodAI {
   void reset(const World& world, int godIdx);
   void update(World& world, float dt);
 
+  // Put down whatever the hand carries and go to Rest - game saves settle
+  // every hand so a save is always a valid world (M7).
+  void settle(World& world);
+
  private:
   void think(World& world);
   bool orderGiftRun(World& world, int villageIdx);
@@ -64,4 +68,6 @@ class GodAI {
   float thinkTimer_ = 0.0f;
   float cooldown_ = 0.0f;
   std::uint32_t rng_ = 1;
+
+  friend struct SaveIO;  // full-state game saves restore privates (M7)
 };

@@ -8,8 +8,9 @@ worship/belief/mana/temple + food miracle (docs/plan-worship.md), scaffolds &
 the building roster (docs/plan-scaffolds.md), mortality & burial, multi-
 village worlds with neutrals, gods & conversion (per-god belief + ownership
 ratchet), the rival AI god (docs/plan-rival.md), the map editor & .gmap files
-(docs/plan-editor.md). Master arc: docs/plan-game.md (next: M7 the skirmish
-shell).
+(docs/plan-editor.md), the skirmish shell — menus/HUD/game-saves/temple
+collapse (docs/plan-shell.md). Master arc: docs/plan-game.md (next: M8 the
+balance & feel pass).
 
 Multi-village invariants: `World::villages[0]` is the player's home village;
 indices are stable for the session. Prop `claimedBy`/`carrier` store packed
@@ -43,6 +44,20 @@ World editor verbs (`editorPlaceVillage`/`editorPlaceTemple`/`editorPaint*`/
 freezes the sim (main.cpp never calls `world.update` while `editor`), and
 toggling either direction rebuilds the world from the map snapshot.
 
+Shell invariants (M7): a `.sav` (savefile::) is the COMPLETE sim state —
+every prop/villager/village/god/AI field including private rng streams
+(`SaveIO` is the one friend allowed in). Saves must stay byte-stable
+(save → load → save identical) and a loaded game must CONTINUE bit-for-bit
+in lockstep with the original (headless test [15] enforces both) — any new
+sim-relevant field MUST be added to SaveFile.cpp or [15] fails the lockstep
+check. Saving settles every hand first (`GodAI::settle`, held things
+released in place) so a save is always a valid world. A god losing its last
+village fires `collapseTemple` from inside `updateOwnership` only (rubble
+props, `God::ruined`, temple un-founded); never break gods elsewhere. Menus,
+HUD, and the pixel font (Font.*) are render-side; the sim never knows the
+shell exists. Text is drawn with the lit shader at uEmissive=1, fog 0,
+through a pixel ortho — no new shaders, no textures.
+
 ## Build & test
 
 ```sh
@@ -54,7 +69,8 @@ xvfb-run -a ./build/godgame --screenshot /tmp/shot.bmp 120 village  # visual che
 The headless suite covers world gen, prop physics, thrown villagers,
 drop-to-assign, storage absorption, worship/miracles, scaffolds, mortality,
 multi-village worlds, the conversion ratchet, the rival AI (incl. AI-vs-AI
-determinism; `--match` runs full wars), map round-trips, a 3-day
+determinism; `--match` runs full wars), map round-trips, game-save
+round-trips (incl. lockstep continue-equality), the temple collapse, a 3-day
 economy/schedule soak, and a double-run determinism checksum. Keep it green;
 extend it with every system.
 

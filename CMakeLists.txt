@@ -52,6 +52,8 @@ add_executable(godgame
   src/Villagers.cpp
   src/GodAI.cpp
   src/MapFile.cpp
+  src/SaveFile.cpp
+  src/Font.cpp
   src/Models.cpp
 )
 

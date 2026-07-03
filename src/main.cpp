@@ -6,6 +6,7 @@
 //   godgame --seed 1234              a specific island seed
 //   godgame --editor                 boot straight into the map editor (Tab toggles)
 //   godgame --map file.gmap          play (or, with --editor, edit) a map file
+//   godgame --load file.sav          resume a saved game
 //   godgame --headless [steps]       no window; generate + simulate + self-test
 //   godgame --match [days]           no window; AI-vs-AI skirmish, day-by-day report
 //   godgame --screenshot out.bmp [frames] [far|close|village|night|temple|rival|roster]
@@ -24,10 +25,12 @@
 #include <vector>
 
 #include "Camera.h"
+#include "Font.h"
 #include "Hand.h"
 #include "MapFile.h"
 #include "Mesh.h"
 #include "Models.h"
+#include "SaveFile.h"
 #include "Shader.h"
 #include "Sky.h"
 #include "Terrain.h"
@@ -315,6 +318,29 @@ struct App {
   bool wasBroken[tune::kMaxGods] = {};  // detects defeat / victory
   bool rivalEnabled = true;             // --no-rival reverts to the sandbox
 
+  // --- the shell (M7): title/pause menus, HUD text, game saves ---
+  enum class Shell { Title, Playing, Pause };
+  Shell shell = Shell::Title;
+  int menuSel = 0;
+  int menuMapChoice = 0;  // skirmish source: 0 = random island, 1..4 = map slot
+  int saveSlot = 1;       // saves/slot<N>.sav (F6 cycles in play)
+  int endState = 0;       // 0 = war on, 1 = victory, 2 = defeat (latched)
+  Mesh hudMesh, dimMesh;
+  float menuY0 = 0.0f, menuStep = 30.0f;  // row hit-testing for the mouse
+  int menuRows = 0;
+
+  void activateMenuRow(int row);
+  void adjustMenuRow(int row, int dir);
+  void clearFallenTempleRings();
+  std::vector<std::string> buildMenuRows() const;
+  bool saveGame(const std::string& path);
+  bool loadGame(const std::string& path);
+  std::string savePath() const {
+    return "saves/slot" + std::to_string(saveSlot) + ".sav";
+  }
+  std::string newestSavePath() const;
+  std::uint32_t nextSeed() { return seed * 1664525u + 1013904223u; }
+
   // --- the map editor (M6): frozen-time authoring, Tab toggles ---
   bool editor = false;
   int editorTool = 0;               // index into kEditorToolNames
@@ -540,6 +566,13 @@ void App::onWorldRebuilt() {
           totalPop, world.gods[1].active ? " | a rival god stirs" : "");
 }
 
+// A collapsed temple takes its ring with it.
+void App::clearFallenTempleRings() {
+  for (int g = 0; g < tune::kMaxGods; ++g)
+    if (templeRings[g].valid() && !world.gods[g].temple.founded)
+      templeRings[g] = Mesh{};
+}
+
 // Rings and ceremony trackers must cover a village founded mid-edit.
 void App::syncWorldBuffers() {
   villageRings.resize(world.villages.size());
@@ -674,6 +707,167 @@ void App::editorClick() {
   }
 }
 
+// ---------------------------------------------------------------- the shell
+
+std::string App::newestSavePath() const {
+  std::string best;
+  std::filesystem::file_time_type bestT{};
+  for (int s = 1; s <= 4; ++s) {
+    std::string p = "saves/slot" + std::to_string(s) + ".sav";
+    std::error_code ec;
+    if (!std::filesystem::exists(p, ec)) continue;
+    auto t = std::filesystem::last_write_time(p, ec);
+    if (ec) continue;
+    if (best.empty() || t > bestT) {
+      best = p;
+      bestT = t;
+    }
+  }
+  return best;
+}
+
+bool App::saveGame(const std::string& path) {
+  if (editor) return false;
+  if (hand.mode == Hand::Mode::Carry) {  // the save settles it in place
+    hand.held.clear();
+    hand.mode = Hand::Mode::Free;
+  }
+  std::error_code ec;
+  std::filesystem::create_directories("saves", ec);
+  savefile::CamState cs;
+  cs.focus[0] = cam.focus.x;
+  cs.focus[1] = cam.focus.y;
+  cs.focus[2] = cam.focus.z;
+  cs.yaw = cam.yaw;
+  cs.distance = cam.distance;
+  cs.pitchOffset = cam.pitchOffset;
+  return savefile::saveFile(world, path.c_str(), &cs);
+}
+
+bool App::loadGame(const std::string& path) {
+  savefile::CamState cs;
+  if (!savefile::loadFile(world, path.c_str(), &cs)) return false;
+  seed = world.seed();
+  editor = false;
+  mapSnapshot.clear();
+  onWorldRebuilt();
+  cam.focus = glm::vec3(cs.focus[0], cs.focus[1], cs.focus[2]);
+  cam.yaw = cs.yaw;
+  cam.distance = cs.distance;
+  cam.pitchOffset = cs.pitchOffset;
+  // Re-derive the war's verdict without re-announcing it.
+  endState = 0;
+  if (world.godBroken(0))
+    endState = 2;
+  else if (world.gods[1].active && world.godBroken(1))
+    endState = 1;
+  for (int g = 0; g < tune::kMaxGods; ++g) wasBroken[g] = world.godBroken(g);
+  return true;
+}
+
+std::vector<std::string> App::buildMenuRows() const {
+  std::vector<std::string> rows;
+  if (shell == Shell::Title) {
+    if (!newestSavePath().empty()) rows.push_back("CONTINUE");
+    rows.push_back(menuMapChoice == 0
+                       ? "SKIRMISH - MAP: RANDOM"
+                       : "SKIRMISH - MAP: SLOT " + std::to_string(menuMapChoice));
+    rows.push_back("SANDBOX");
+    rows.push_back("EDITOR");
+    rows.push_back("QUIT");
+  } else {
+    rows.push_back("RESUME");
+    if (!editor) {
+      rows.push_back("SAVE TO SLOT " + std::to_string(saveSlot));
+      rows.push_back("LOAD SLOT " + std::to_string(saveSlot));
+    }
+    rows.push_back("MAIN MENU");
+    rows.push_back("QUIT");
+  }
+  return rows;
+}
+
+void App::activateMenuRow(int row) {
+  std::vector<std::string> rows = buildMenuRows();
+  if (row < 0 || row >= static_cast<int>(rows.size())) return;
+  const std::string& r = rows[row];
+  if (shell == Shell::Title) {
+    if (r == "CONTINUE") {
+      std::string p = newestSavePath();
+      if (!p.empty() && loadGame(p)) {
+        shell = Shell::Playing;
+        SDL_Log("Continue: %s", p.c_str());
+      }
+    } else if (r.rfind("SKIRMISH", 0) == 0) {
+      rivalEnabled = true;
+      if (menuMapChoice == 0) {
+        rebuildWorld(nextSeed());
+      } else if (!loadMapFromFile("maps/slot" + std::to_string(menuMapChoice) +
+                                  ".gmap")) {
+        SDL_Log("No map in slot %d", menuMapChoice);
+        return;
+      }
+      endState = 0;
+      shell = Shell::Playing;
+    } else if (r == "SANDBOX") {
+      rivalEnabled = false;
+      rebuildWorld(nextSeed());
+      rivalEnabled = true;
+      endState = 0;
+      shell = Shell::Playing;
+    } else if (r == "EDITOR") {
+      rivalEnabled = true;
+      rebuildWorld(nextSeed());
+      toggleEditor();
+      endState = 0;
+      shell = Shell::Playing;
+    } else if (r == "QUIT") {
+      quit = true;
+    }
+  } else {
+    if (r == "RESUME") {
+      shell = Shell::Playing;
+    } else if (r.rfind("SAVE", 0) == 0) {
+      SDL_Log(saveGame(savePath()) ? "Saved %s" : "Could not save %s",
+              savePath().c_str());
+    } else if (r.rfind("LOAD", 0) == 0) {
+      if (loadGame(savePath())) {
+        shell = Shell::Playing;
+        SDL_Log("Loaded %s", savePath().c_str());
+      } else {
+        SDL_Log("No save in %s", savePath().c_str());
+      }
+    } else if (r == "MAIN MENU") {
+      if (editor) toggleEditor();
+      endState = 0;
+      shell = Shell::Title;
+      menuSel = 0;
+    } else if (r == "QUIT") {
+      quit = true;
+    }
+  }
+}
+
+void App::adjustMenuRow(int row, int dir) {
+  std::vector<std::string> rows = buildMenuRows();
+  if (row < 0 || row >= static_cast<int>(rows.size())) return;
+  const std::string& r = rows[row];
+  if (shell == Shell::Title && r.rfind("SKIRMISH", 0) == 0) {
+    // Cycle: random, then only the map slots that exist.
+    for (int step = 0; step < 5; ++step) {
+      menuMapChoice = (menuMapChoice + dir + 5) % 5;
+      if (menuMapChoice == 0) break;
+      std::error_code ec;
+      if (std::filesystem::exists(
+              "maps/slot" + std::to_string(menuMapChoice) + ".gmap", ec))
+        break;
+    }
+  } else if (shell == Shell::Pause &&
+             (r.rfind("SAVE", 0) == 0 || r.rfind("LOAD", 0) == 0)) {
+    saveSlot = (saveSlot - 1 + dir + 4) % 4 + 1;
+  }
+}
+
 // Owned villages project their god's rings, growing with belief; rebuild each
 // ring's terrain-following mesh only when its radius or owner truly changes.
 void App::refreshVillageRings() {
@@ -697,6 +891,78 @@ void App::refreshVillageRings() {
 }
 
 void App::handleEvent(const SDL_Event& e) {
+  // The menus swallow input while they're up.
+  if (shell != Shell::Playing) {
+    switch (e.type) {
+      case SDL_QUIT:
+        quit = true;
+        break;
+      case SDL_WINDOWEVENT:
+        if (e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
+          winW = e.window.data1;
+          winH = e.window.data2;
+        }
+        break;
+      case SDL_MOUSEMOTION: {
+        mouseX = e.motion.x;
+        mouseY = e.motion.y;
+        int row = static_cast<int>(
+            std::floor((static_cast<float>(mouseY) - menuY0) / menuStep));
+        if (row >= 0 && row < menuRows) menuSel = row;
+        break;
+      }
+      case SDL_MOUSEBUTTONDOWN:
+        if (e.button.button == SDL_BUTTON_LEFT) {
+          int row = static_cast<int>(
+              std::floor((static_cast<float>(mouseY) - menuY0) / menuStep));
+          if (row >= 0 && row < menuRows) {
+            menuSel = row;
+            activateMenuRow(row);
+          }
+        }
+        break;
+      case SDL_KEYDOWN: {
+        if (e.key.repeat) break;
+        int count = std::max(1, menuRows);
+        switch (e.key.keysym.sym) {
+          case SDLK_ESCAPE:
+            if (shell == Shell::Pause)
+              shell = Shell::Playing;  // resume
+            else
+              quit = true;  // the title's exit
+            break;
+          case SDLK_UP:
+          case SDLK_w:
+            menuSel = (menuSel - 1 + count) % count;
+            break;
+          case SDLK_DOWN:
+          case SDLK_s:
+            menuSel = (menuSel + 1) % count;
+            break;
+          case SDLK_LEFT:
+          case SDLK_a:
+            adjustMenuRow(menuSel, -1);
+            break;
+          case SDLK_RIGHT:
+          case SDLK_d:
+            adjustMenuRow(menuSel, +1);
+            break;
+          case SDLK_RETURN:
+          case SDLK_KP_ENTER:
+          case SDLK_SPACE:
+            activateMenuRow(menuSel);
+            break;
+          default:
+            break;
+        }
+        break;
+      }
+      default:
+        break;
+    }
+    return;
+  }
+
   switch (e.type) {
     case SDL_QUIT:
       quit = true;
@@ -764,7 +1030,8 @@ void App::handleEvent(const SDL_Event& e) {
       if (e.key.repeat) break;
       switch (e.key.keysym.sym) {
         case SDLK_ESCAPE:
-          quit = true;
+          shell = Shell::Pause;  // quitting is a menu act now
+          menuSel = 0;
           break;
         case SDLK_TAB:
           toggleEditor();
@@ -824,6 +1091,9 @@ void App::handleEvent(const SDL_Event& e) {
               SDL_Log("Saved %s", mapSlotPath().c_str());
             else
               SDL_Log("Could not write %s", mapSlotPath().c_str());
+          } else {
+            SDL_Log(saveGame(savePath()) ? "Saved %s" : "Could not save %s",
+                    savePath().c_str());
           }
           break;
         case SDLK_F9:
@@ -832,6 +1102,11 @@ void App::handleEvent(const SDL_Event& e) {
               SDL_Log("Loaded %s", mapSlotPath().c_str());
             else
               SDL_Log("No map in %s", mapSlotPath().c_str());
+          } else {
+            if (loadGame(savePath()))
+              SDL_Log("Loaded %s", savePath().c_str());
+            else
+              SDL_Log("No save in %s", savePath().c_str());
           }
           break;
         case SDLK_F6:
@@ -839,6 +1114,10 @@ void App::handleEvent(const SDL_Event& e) {
             mapSlot = mapSlot % 4 + 1;
             bool there = std::filesystem::exists(mapSlotPath());
             SDL_Log("map slot %d%s", mapSlot, there ? " (occupied)" : " (empty)");
+          } else {
+            saveSlot = saveSlot % 4 + 1;
+            bool there = std::filesystem::exists(savePath());
+            SDL_Log("save slot %d%s", saveSlot, there ? " (occupied)" : " (empty)");
           }
           break;
         case SDLK_t:
@@ -891,6 +1170,30 @@ void App::handleEvent(const SDL_Event& e) {
 }
 
 void App::update(float dt) {
+  // Title: the island lives on ambiently behind the menu, slowly orbited.
+  if (shell == Shell::Title) {
+    cam.yaw += 0.045f * dt;
+    float focusY = std::max(world.terrain.heightAt(cam.focus.x, cam.focus.z),
+                            Terrain::WATER_LEVEL);
+    cam.focus.y += (focusY - cam.focus.y) * std::min(1.0f, 8.0f * dt);
+    world.handPos = glm::vec3(0.0f, 1.0e9f, 0.0f);
+    world.handSpeed = 0.0f;
+    world.update(dt);
+    refreshVillageRings();
+    clearFallenTempleRings();
+    for (CastEffect& e : effects) e.age += dt;
+    effects.erase(std::remove_if(effects.begin(), effects.end(),
+                                 [](const CastEffect& e) { return e.age > 1.2f; }),
+                  effects.end());
+    wheelAccum = 0.0f;
+    return;
+  }
+  // Pause: the world holds its breath.
+  if (shell == Shell::Pause) {
+    wheelAccum = 0.0f;
+    return;
+  }
+
   const Uint8* keys = SDL_GetKeyboardState(nullptr);
 
   glm::vec3 forward(std::sin(cam.yaw), 0.0f, std::cos(cam.yaw));
@@ -966,6 +1269,7 @@ void App::update(float dt) {
   }
 
   refreshVillageRings();
+  clearFallenTempleRings();
 
   if (!editor) {
     // Conversion ceremonies: a pulse and a headline when a village changes gods.
@@ -981,14 +1285,17 @@ void App::update(float dt) {
       lastOwners[v] = owner;
     }
 
-    // Defeat and victory (the full ceremony arrives with the skirmish shell).
+    // Defeat and victory: the card latches; time keeps flowing.
     for (int g = 0; g < tune::kMaxGods; ++g) {
       bool broken = world.godBroken(g);
       if (broken && !wasBroken[g]) {
-        if (g == 0)
+        if (g == 0) {
           SDL_Log("Your last village has fallen. The island forgets you...");
-        else
-          SDL_Log("The rival god is broken - its hand hangs still. The island is yours!");
+          if (endState == 0) endState = 2;
+        } else {
+          SDL_Log("The rival god is broken - its temple lies in rubble. The island is yours!");
+          if (endState == 0) endState = 1;
+        }
       }
       wasBroken[g] = broken;
     }
@@ -1529,7 +1836,7 @@ void App::render(float time) {
     (brain.held.none() ? handOpen : handClosed).draw();
   }
   lit.set("uTint", glm::vec3(1.0f));
-  if (!editor) {  // the editor's cursor is the brush ring, not the hand
+  if (!editor && shell == Shell::Playing) {  // menus and brushes replace it
     float handScale = std::clamp(cam.distance * 0.045f, 1.2f, 8.0f);
     glm::mat4 handModel = glm::translate(glm::mat4(1.0f), hand.pos) *
                           glm::rotate(glm::mat4(1.0f), cam.yaw, glm::vec3(0, 1, 0)) *
@@ -1549,6 +1856,139 @@ void App::render(float time) {
   lit.set("uEmissive", 0.0f);
   gl.DepthMask(GL_TRUE);
   gl.Disable(GL_BLEND);
+
+  // --- screen-space text: the HUD, the cards, the menus (M7) ---
+  {
+    MeshData hud;
+    MeshData dim;
+    const float W = static_cast<float>(winW), H = static_cast<float>(winH);
+    const glm::vec3 gold(1.0f, 0.88f, 0.45f), white(0.92f, 0.92f, 0.88f),
+        grey(0.62f, 0.62f, 0.58f), crimson(0.95f, 0.35f, 0.30f);
+    char line[200];
+
+    if (shell == Shell::Playing && !editor) {
+      // The god's ledger.
+      int pop = 0, mine = 0, theirs = 0, freev = 0, wood = 0, food = 0;
+      float belief = 0.0f;
+      bool haveHome = false;
+      for (const Village& v : world.villages) {
+        if (!v.founded) continue;
+        pop += v.population();
+        if (v.owner == 0) {
+          ++mine;
+          if (!haveHome) {
+            wood = v.wood;
+            food = v.food;
+            belief = v.belief[0] * 100.0f;
+            haveHome = true;
+          }
+        } else if (v.owner >= 1) {
+          ++theirs;
+        } else {
+          ++freev;
+        }
+      }
+      std::snprintf(line, sizeof line,
+                    "MANA %.0f/%.0f  POP %d  WOOD %d  FOOD %d  BELIEF %.0f%%  DAY %d",
+                    world.gods[0].mana, world.gods[0].manaMax, pop, wood, food,
+                    belief, world.dayCycle.day);
+      font::addText(hud, line, 12.0f, 10.0f, 2.0f, gold);
+      if (world.gods[1].active || theirs > 0) {
+        std::snprintf(line, sizeof line, "THE WAR: YOU %d  RIVAL %d  FREE %d",
+                      mine, theirs, freev);
+        font::addText(hud, line, 12.0f, 30.0f, 2.0f, white);
+      }
+      if (endState != 0) {
+        const char* big =
+            endState == 1 ? "THE ISLAND IS YOURS" : "THE ISLAND FORGETS YOU";
+        float bs = 6.0f;
+        font::addText(hud, big, (W - font::textWidth(big, bs)) * 0.5f, H * 0.30f,
+                      bs, endState == 1 ? gold : crimson);
+        const char* sub = "TIME FLOWS ON - ESC FOR THE MENU";
+        font::addText(hud, sub, (W - font::textWidth(sub, 2.0f)) * 0.5f,
+                      H * 0.30f + 8.0f * bs + 10.0f, 2.0f, white);
+      }
+    } else if (shell == Shell::Playing && editor) {
+      std::snprintf(line, sizeof line,
+                    "EDITOR: %s  BRUSH %.0f  OWNER %s  SIZE %s  MAP SLOT %d",
+                    kEditorToolNames[editorTool], brushRadius,
+                    editorOwnerName(editorOwner), editorPresetName(editorPreset),
+                    mapSlot);
+      font::addText(hud, line, 12.0f, 10.0f, 2.0f, white);
+      font::addText(hud, "1-9 TOOLS  ( ) BRUSH  G OWNER  V SIZE  N BLANK  "
+                         "F5/F9/F6 SLOTS  TAB TO PLAY",
+                    12.0f, 30.0f, 2.0f, grey);
+    } else {
+      // A menu: dim the world, then the title and its rows.
+      std::uint32_t base = dim.vertexCount();
+      glm::vec3 dk(0.02f, 0.03f, 0.05f);
+      glm::vec3 n(0, 0, 1);
+      dim.addVertex(glm::vec3(0, 0, 0), n, dk);
+      dim.addVertex(glm::vec3(W, 0, 0), n, dk);
+      dim.addVertex(glm::vec3(W, H, 0), n, dk);
+      dim.addVertex(glm::vec3(0, H, 0), n, dk);
+      dim.addTriangle(base, base + 1, base + 2);
+      dim.addTriangle(base, base + 2, base + 3);
+
+      const char* heading = shell == Shell::Title ? "GODGAME" : "PAUSED";
+      float hs = shell == Shell::Title ? 9.0f : 6.0f;
+      font::addText(hud, heading, (W - font::textWidth(heading, hs)) * 0.5f,
+                    H * 0.16f, hs, gold);
+      if (shell == Shell::Title) {
+        const char* tag = "AN ISLAND OF FAITH, CLAY, AND ONE JEALOUS RIVAL";
+        font::addText(hud, tag, (W - font::textWidth(tag, 2.0f)) * 0.5f,
+                      H * 0.16f + 8.0f * hs + 12.0f, 2.0f, grey);
+      }
+
+      std::vector<std::string> rows = buildMenuRows();
+      menuRows = static_cast<int>(rows.size());
+      menuSel = std::min(menuSel, std::max(0, menuRows - 1));
+      menuY0 = H * 0.44f;
+      menuStep = 34.0f;
+      for (int i = 0; i < menuRows; ++i) {
+        bool sel = i == menuSel;
+        float scale = 3.0f;
+        float x = (W - font::textWidth(rows[i].c_str(), scale)) * 0.5f;
+        float y = menuY0 + static_cast<float>(i) * menuStep;
+        if (sel) font::addText(hud, ">", x - 26.0f, y, scale, gold);
+        font::addText(hud, rows[i].c_str(), x, y, scale, sel ? gold : white);
+      }
+      const char* hint = "ARROWS + ENTER, OR THE MOUSE";
+      font::addText(hud, hint, (W - font::textWidth(hint, 2.0f)) * 0.5f,
+                    menuY0 + static_cast<float>(menuRows) * menuStep + 22.0f,
+                    2.0f, grey);
+    }
+
+    if (!dim.vertices.empty() || !hud.vertices.empty()) {
+      gl.Disable(GL_DEPTH_TEST);
+      gl.Disable(GL_CULL_FACE);
+      gl.Enable(GL_BLEND);
+      gl.BlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+      gl.DepthMask(GL_FALSE);
+      lit.use();
+      lit.set("uVP", glm::ortho(0.0f, W, H, 0.0f, -1.0f, 1.0f));
+      lit.set("uModel", glm::mat4(1.0f));
+      lit.set("uTint", glm::vec3(1.0f));
+      lit.set("uEmissive", 1.0f);
+      lit.set("uFogDensity", 0.0f);
+      if (!dim.vertices.empty()) {
+        lit.set("uAlpha", 0.55f);
+        dimMesh.upload(dim);
+        dimMesh.draw();
+      }
+      if (!hud.vertices.empty()) {
+        lit.set("uAlpha", 1.0f);
+        hudMesh.upload(hud);
+        hudMesh.draw();
+      }
+      lit.set("uEmissive", 0.0f);
+      lit.set("uAlpha", 1.0f);
+      gl.Enable(GL_DEPTH_TEST);
+      gl.Enable(GL_CULL_FACE);
+      gl.DepthMask(GL_TRUE);
+      gl.Disable(GL_BLEND);
+    }
+  }
 
   SDL_GL_SwapWindow(window);
 }
@@ -1620,6 +2060,7 @@ int App::runInteractive() {
 }
 
 int App::runScreenshot(const std::string& path, int frames, const std::string& view) {
+  shell = view == "menu" ? Shell::Title : Shell::Playing;
   if (view == "close") {
     // Frame the first tree from up close.
     glm::vec3 target(0.0f, 0.0f, 0.0f);
@@ -2682,6 +3123,105 @@ int runHeadless(std::uint32_t seed, int steps) {
     check(!mapfile::load(wh, hb.data(), hb.size() / 2), "a truncated file is refused");
   }
 
+  // [15] The shell: full game saves that continue bit-for-bit, the temple
+  // collapse ceremony, the day counter, and the font that writes the cards.
+  std::printf("[15] the shell\n");
+  {
+    const float dts = 1.0f / 60.0f;
+
+    // The font raises real geometry for the whole charset.
+    {
+      MeshData md;
+      font::addText(md,
+                    "ABCDEFGHIJKLMNOPQRSTUVWXYZ 0123456789 .,:!?'-+/%()<>=",
+                    0.0f, 0.0f, 2.0f, glm::vec3(1.0f));
+      std::printf("      font pixels: %u quads\n",
+                  static_cast<unsigned>(md.indices.size() / 6));
+      check(md.vertexCount() > 1200 && md.indices.size() % 3 == 0,
+            "the font raises pixels for every glyph");
+    }
+
+    // Days count.
+    {
+      DayCycle dc;
+      dc.secondsPerDay = 10.0f;
+      int d0 = dc.day;
+      for (int s = 0; s < 25 * 60; ++s) dc.advance(dts);
+      check(dc.day == d0 + 2, "the day counter counts midnights");
+    }
+
+    // Full game saves: a mid-war world survives the file bit-for-bit.
+    World wa;
+    wa.generate(seed, 2);
+    wa.dayCycle.secondsPerDay = 240.0f;
+    for (int s = 0; s < 45 * 60; ++s) wa.update(dts);  // 45 s of live war
+
+    std::vector<std::uint8_t> sav;
+    savefile::save(wa, sav);  // settles every hand, then everything
+    std::printf("      save buffer %.0f KB\n",
+                static_cast<float>(sav.size()) / 1024.0f);
+    World wl;
+    check(savefile::load(wl, sav.data(), sav.size()), "the save loads");
+    check(worldChecksum(wl) == worldChecksum(wa),
+          "and matches the saved world bit-for-bit");
+    std::vector<std::uint8_t> sav2;
+    savefile::save(wl, sav2);
+    check(sav == sav2, "save -> load -> save is byte-stable");
+
+    // The loaded game CONTINUES like the original: lockstep equality.
+    for (int s = 0; s < 45 * 60; ++s) {
+      wa.update(dts);
+      wl.update(dts);
+    }
+    check(worldChecksum(wa) == worldChecksum(wl),
+          "a loaded game continues bit-for-bit like the original");
+    check(!savefile::load(wl, sav.data(), sav.size() / 3),
+          "a truncated save is refused");
+
+    // The collapse ceremony: strip the rival's last village.
+    auto countRocks = [](const World& w) {
+      int n = 0;
+      for (const Prop& p : w.props)
+        if (p.alive && p.type == PropType::Rock) ++n;
+      return n;
+    };
+    World wc;
+    wc.generate(seed, 2);
+    check(wc.gods[1].active && wc.gods[1].temple.founded, "the rival stands");
+    int rivalHome = -1;
+    for (std::size_t v = 0; v < wc.villages.size(); ++v)
+      if (wc.villages[v].owner == 1) rivalHome = static_cast<int>(v);
+    if (rivalHome > 0) {
+      int rocksBefore = countRocks(wc);
+      wc.villages[rivalHome].belief[0] = tune::kStealBelief + 0.05f;
+      wc.villages[rivalHome].belief[1] = tune::kStealOwnerBelow - 0.05f;
+      wc.update(dts);
+      check(wc.villages[rivalHome].owner == 0, "its home falls to you");
+      check(wc.godBroken(1) && wc.gods[1].ruined,
+            "the rival is broken and ruined");
+      check(!wc.gods[1].temple.founded, "its temple is gone");
+      int rubble = countRocks(wc) - rocksBefore;
+      std::printf("      rubble: %d rocks flung\n", rubble);
+      check(rubble >= 8, "the temple crumbled into rubble");
+      check(wc.gods[1].mana == 0.0f, "its mana is dust");
+
+      World wc2;
+      wc2.generate(seed, 2);
+      wc2.villages[rivalHome].belief[0] = tune::kStealBelief + 0.05f;
+      wc2.villages[rivalHome].belief[1] = tune::kStealOwnerBelow - 0.05f;
+      wc2.update(dts);
+      check(worldChecksum(wc) == worldChecksum(wc2),
+            "the ceremony is deterministic");
+
+      std::vector<std::uint8_t> csav;
+      savefile::save(wc, csav);
+      World wcl;
+      check(savefile::load(wcl, csav.data(), csav.size()) &&
+                wcl.gods[1].ruined && !wcl.gods[1].temple.founded,
+            "ruin survives the save file");
+    }
+  }
+
   // [6] Three-day economy & schedule soak. Days are shrunk to 240 s - short
   // enough to simulate fast, long enough that walking/chopping (real-time
   // actions) still fit inside a work day.
@@ -2842,6 +3382,7 @@ int main(int argc, char** argv) {
   int headlessSteps = 900;
   std::string screenshotPath;
   std::string mapPath;
+  std::string loadPath;
   int screenshotFrames = 90;
   std::string screenshotView = "far";
 
@@ -2858,6 +3399,8 @@ int main(int argc, char** argv) {
       editor = true;
     } else if (arg == "--map" && i + 1 < argc) {
       mapPath = argv[++i];
+    } else if (arg == "--load" && i + 1 < argc) {
+      loadPath = argv[++i];
     } else if (arg == "--match") {
       match = true;
       if (i + 1 < argc && argv[i + 1][0] != '-') matchDays = std::atoi(argv[++i]);
@@ -2880,12 +3423,25 @@ int main(int argc, char** argv) {
   if (!app.initGraphics()) return 1;
   app.initScene();
   if (!mapPath.empty()) {
-    if (app.loadMapFromFile(mapPath))
+    if (app.loadMapFromFile(mapPath)) {
       SDL_Log("Map loaded: %s", mapPath.c_str());
-    else
+      app.shell = App::Shell::Playing;
+    } else {
       SDL_Log("Could not load %s - generated an island instead", mapPath.c_str());
+    }
   }
-  if (editor) app.toggleEditor();
+  if (!loadPath.empty()) {
+    if (app.loadGame(loadPath)) {
+      SDL_Log("Save loaded: %s", loadPath.c_str());
+      app.shell = App::Shell::Playing;
+    } else {
+      SDL_Log("Could not load save %s", loadPath.c_str());
+    }
+  }
+  if (editor) {
+    app.toggleEditor();
+    app.shell = App::Shell::Playing;
+  }
 
   int rc;
   if (!screenshotPath.empty())

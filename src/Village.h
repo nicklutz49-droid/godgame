@@ -179,4 +179,6 @@ class Village {
  private:
   float lastT = -1.0f;  // detects the dawn crossing
   std::uint32_t rng_ = 1;
+
+  friend struct SaveIO;  // full-state game saves restore privates (M7)
 };
