@@ -278,6 +278,7 @@ struct App {
     float age;
   };
   std::vector<CastEffect> effects;
+  std::vector<int> lastOwners;  // detects conversion ceremonies
 
   const Mesh* buildingMesh(BuildingType t);
   void refreshVillageRings();
@@ -446,9 +447,9 @@ void App::rebuildWorld(std::uint32_t newSeed) {
   hand.held.clear();
   hand.hover.clear();
   effects.clear();
-  if (world.temple.founded)
+  if (world.gods[0].temple.founded)
     templeRing.upload(buildRingMeshData(
-        world.terrain, glm::vec2(world.temple.pos.x, world.temple.pos.z),
+        world.terrain, glm::vec2(world.gods[0].temple.pos.x, world.gods[0].temple.pos.z),
         tune::kTempleInfluence));
   villageRings.clear();
   villageRings.resize(world.villages.size());
@@ -572,13 +573,13 @@ void App::handleEvent(const SDL_Event& e) {
           if (hand.hasGround) {
             if (world.castFoodMiracle(hand.groundPoint)) {
               effects.push_back({hand.groundPoint, 0.0f});
-              SDL_Log("food miracle! mana %.0f/%.0f", world.temple.mana,
-                      world.temple.manaMax);
+              SDL_Log("food miracle! mana %.0f/%.0f", world.gods[0].mana,
+                      world.gods[0].manaMax);
             } else if (!world.insideInfluence(hand.groundPoint)) {
               SDL_Log("cannot cast: outside your influence");
             } else {
               SDL_Log("cannot cast: need %.0f mana (have %.0f)",
-                      tune::kFoodMiracleCost, world.temple.mana);
+                      tune::kFoodMiracleCost, world.gods[0].mana);
             }
           }
           break;
@@ -666,6 +667,19 @@ void App::update(float dt) {
 
   refreshVillageRings();
 
+  // Conversion ceremonies: a pulse and a headline when a village changes gods.
+  if (lastOwners.size() != world.villages.size())
+    lastOwners.assign(world.villages.size(), -2);
+  for (std::size_t v = 0; v < world.villages.size(); ++v) {
+    int owner = world.villages[v].owner;
+    if (lastOwners[v] != -2 && lastOwners[v] != owner) {
+      effects.push_back({world.villages[v].center, 0.0f});
+      SDL_Log(owner == 0 ? "A village has joined your faith!"
+                         : "A village has fallen to another god!");
+    }
+    lastOwners[v] = owner;
+  }
+
   for (CastEffect& e : effects) e.age += dt;
   effects.erase(std::remove_if(effects.begin(), effects.end(),
                                [](const CastEffect& e) { return e.age > 1.2f; }),
@@ -673,6 +687,13 @@ void App::update(float dt) {
 }
 
 namespace {
+
+// Each god's identity color (rings, totem accents). Neutral = unpainted.
+glm::vec3 godColor(int god) {
+  if (god == 0) return {1.0f, 0.88f, 0.45f};   // the player: gold
+  if (god == 1) return {0.95f, 0.35f, 0.30f};  // the rival: crimson (M5)
+  return {1.0f, 1.0f, 1.0f};
+}
 
 glm::vec3 jobTint(Job j) {
   switch (j) {
@@ -787,13 +808,13 @@ void App::render(float time) {
   lit.set("uEmissive", 0.0f);
 
   // The temple: the god's seat, its crystal glowing with stored mana.
-  if (world.temple.founded) {
-    glm::mat4 tm = glm::translate(glm::mat4(1.0f), world.temple.pos) *
-                   glm::rotate(glm::mat4(1.0f), world.temple.yaw, glm::vec3(0, 1, 0));
+  if (world.gods[0].temple.founded) {
+    glm::mat4 tm = glm::translate(glm::mat4(1.0f), world.gods[0].temple.pos) *
+                   glm::rotate(glm::mat4(1.0f), world.gods[0].temple.yaw, glm::vec3(0, 1, 0));
     lit.set("uModel", tm);
     templeMesh.draw();
-    float manaFrac = world.temple.manaMax > 0.0f
-                         ? world.temple.mana / world.temple.manaMax
+    float manaFrac = world.gods[0].manaMax > 0.0f
+                         ? world.gods[0].mana / world.gods[0].manaMax
                          : 0.0f;
     // The beacon floats above the roof so the mana level reads from anywhere.
     lit.set("uEmissive",
@@ -823,9 +844,14 @@ void App::render(float time) {
     switch (bd.type) {
       case BuildingType::Center:
         lit.set("uEmissive", totemGlow);
+        // The totem wears its god's color - repainted by conversion.
+        lit.set("uTint", vil.owner >= 0
+                             ? glm::mix(glm::vec3(1.0f), godColor(vil.owner), 0.45f)
+                             : glm::vec3(1.0f));
         lit.set("uModel", model * glm::scale(glm::mat4(1.0f),
                                              glm::vec3(1.0f + 0.14f * (bd.level - 1))));
         totemMesh.draw();
+        lit.set("uTint", glm::vec3(1.0f));
         lit.set("uEmissive", 0.0f);
         break;
       case BuildingType::Storage: storagePadMesh.draw(); break;
@@ -1198,8 +1224,8 @@ int App::runInteractive() {
                     "godgame - %.0f fps | pop %d  wood %d  food %d | mana %.0f  "
                     "belief %.0f%% | day %.2f",
                     fpsFrames / fpsTimer, pop, world.home().wood,
-                    world.home().food, world.temple.mana,
-                    world.home().belief * 100.0f, world.dayCycle.t);
+                    world.home().food, world.gods[0].mana,
+                    world.home().belief[0] * 100.0f, world.dayCycle.t);
       SDL_SetWindowTitle(window, title);
       fpsTimer = 0.0f;
       fpsFrames = 0;
@@ -1227,9 +1253,9 @@ int App::runScreenshot(const std::string& path, int frames, const std::string& v
     cam.yaw = 2.3f;
     if (view == "night") world.dayCycle.t = 0.93f;
   } else if (view == "temple") {
-    cam.focus = world.temple.pos;
+    cam.focus = world.gods[0].temple.pos;
     cam.distance = 55.0f;
-    cam.yaw = world.temple.yaw + 3.14159f;
+    cam.yaw = world.gods[0].temple.yaw + 3.14159f;
   } else if (view == "roster") {
     // A model-viewer scene: every scaffold-built building in a row, plus
     // scaffold stacks, so the whole roster can be eyeballed at once.
@@ -1341,7 +1367,7 @@ std::uint64_t worldChecksum(const World& w) {
     h = fnvMix(h, &j, sizeof j);
     h = fnvMix(h, &a, sizeof a);
   }
-  int counters[3] = {vil.wood, vil.food, vil.population()};
+  int counters[4] = {vil.wood, vil.food, vil.population(), vil.owner};
   h = fnvMix(h, counters, sizeof counters);
   for (const Building& b : vil.buildings) {
     int info[4] = {static_cast<int>(b.type), b.stage, b.level, b.charges};
@@ -1349,9 +1375,9 @@ std::uint64_t worldChecksum(const World& w) {
   }
   int fieldCount = static_cast<int>(vil.fields.size());
   h = fnvMix(h, &fieldCount, sizeof fieldCount);
-  addF(vil.belief);
+  for (int g = 0; g < tune::kMaxGods; ++g) addF(vil.belief[g]);
   }
-  addF(w.temple.mana);
+  for (int g = 0; g < tune::kMaxGods; ++g) addF(w.gods[g].mana);
   addF(w.dayCycle.t);
   return h;
 }
@@ -1522,19 +1548,19 @@ int runHeadless(std::uint32_t seed, int steps) {
   // Worship, mana, influence and the food miracle.
   std::printf("[8] worship, mana & the temple\n");
   {
-    check(world.temple.founded, "temple founded");
-    float distTV = glm::distance(glm::vec2(world.temple.pos.x, world.temple.pos.z),
+    check(world.gods[0].temple.founded, "temple founded");
+    float distTV = glm::distance(glm::vec2(world.gods[0].temple.pos.x, world.gods[0].temple.pos.z),
                                  glm::vec2(vil.center.x, vil.center.z));
     std::printf("      temple at (%.0f, %.0f), %.0f m from the village | mana %.0f | belief %.2f\n",
-                world.temple.pos.x, world.temple.pos.z, distTV, world.temple.mana,
-                vil.belief);
+                world.gods[0].temple.pos.x, world.gods[0].temple.pos.z, distTV, world.gods[0].mana,
+                vil.belief[0]);
     check(distTV > 40.0f && distTV < 70.0f, "temple stands apart, near the village");
-    check(world.temple.pos.y > 1.0f, "temple on land");
+    check(world.gods[0].temple.pos.y > 1.0f, "temple on land");
     check(vil.resolveJobAtPoint(world, vil.buildings[vil.centerIdx].pos) ==
               Job::Worshipper,
           "totem -> worshipper");
     check(world.insideInfluence(vil.center), "village inside influence");
-    check(world.insideInfluence(world.temple.pos), "temple inside influence");
+    check(world.insideInfluence(world.gods[0].temple.pos), "temple inside influence");
 
     glm::vec2 c2(vil.center.x, vil.center.z);
     glm::vec2 awayDir = glm::length(c2) > 1.0f ? -glm::normalize(c2)
@@ -1543,12 +1569,12 @@ int runHeadless(std::uint32_t seed, int steps) {
                        awayDir.y * Terrain::SIZE * 0.45f);
     check(!world.insideInfluence(farPoint), "far shore outside influence");
 
-    world.temple.mana = 5.0f;
+    world.gods[0].mana = 5.0f;
     check(!world.castFoodMiracle(vil.center), "cast fails without mana");
-    world.temple.mana = 100.0f;
+    world.gods[0].mana = 100.0f;
     check(!world.castFoodMiracle(farPoint), "cast fails outside influence");
 
-    float beliefBefore = vil.belief;
+    float beliefBefore = vil.belief[0];
     auto countFood = [&]() {
       int n = 0;
       for (const Prop& p : world.props)
@@ -1558,24 +1584,24 @@ int runHeadless(std::uint32_t seed, int steps) {
     int foodBefore = countFood();
     check(world.castFoodMiracle(vil.center + glm::vec3(5.0f, 0.0f, 5.0f)),
           "cast succeeds inside influence");
-    check(world.temple.mana == 100.0f - tune::kFoodMiracleCost, "mana was spent");
+    check(world.gods[0].mana == 100.0f - tune::kFoodMiracleCost, "mana was spent");
     check(countFood() >= foodBefore + tune::kFoodMiracleBundles, "food rained from heaven");
-    check(vil.belief > beliefBefore, "witnesses believed harder");
+    check(vil.belief[0] > beliefBefore, "witnesses believed harder");
 
     // A fresh world: does the starter worshipper alone fill the pool?
     World w3;
     w3.generate(seed);
     w3.dayCycle.secondsPerDay = 240.0f;
-    float manaStart = w3.temple.mana;
+    float manaStart = w3.gods[0].mana;
     bool dancerSeen = false;
     for (int i = 0; i < static_cast<int>(240.0f / dt); ++i) {
       w3.update(dt);
       if ((i & 127) == 0 && w3.home().activeWorshippers() > 0) dancerSeen = true;
     }
     std::printf("      one day of worship: mana %.0f (from %.0f), belief %.2f\n",
-                w3.temple.mana, manaStart, w3.home().belief);
+                w3.gods[0].mana, manaStart, w3.home().belief[0]);
     check(dancerSeen, "the worshipper danced at the totem");
-    check(w3.temple.mana > manaStart + 5.0f, "worship generated mana");
+    check(w3.gods[0].mana > manaStart + 5.0f, "worship generated mana");
   }
 
   // [9] Scaffolds and the building roster.
@@ -1692,7 +1718,7 @@ int runHeadless(std::uint32_t seed, int steps) {
     check(dispIdx >= 0, "a dispenser stands");
     if (dispIdx >= 0) {
       v4.buildings[dispIdx].charges = 2;
-      w4.temple.mana = 0.0f;
+      w4.gods[0].mana = 0.0f;
       check(w4.castFoodMiracle(v4.buildings[dispIdx].pos + glm::vec3(3, 0, 0)),
             "cast from dispenser charges with an empty pool");
       check(v4.buildings[dispIdx].charges == 1, "a charge was spent");
@@ -1722,7 +1748,8 @@ int runHeadless(std::uint32_t seed, int steps) {
     glm::vec3 deep(v4.center.x, 0.0f, v4.center.z);
     deep += glm::vec3(200.0f, 0.0f, 200.0f);
     check(!w4.scaffoldPlacementValid(deep, 1), "placement far outside refused");
-    check(!w4.scaffoldPlacementValid(w4.temple.pos, 1), "placement on the temple refused");
+    check(!w4.scaffoldPlacementValid(w4.gods[0].temple.pos, 1),
+          "placement on the temple refused");
   }
 
   // [10] Mortality & burial: the Graveyard earns its headstones.
@@ -1855,12 +1882,94 @@ int runHeadless(std::uint32_t seed, int steps) {
       const Village& n = world.villages[1];
       check(!world.insideInfluence(n.center),
             "a neutral village sits outside your influence");
-      float nb = n.belief, pb = world.home().belief;
-      world.notifyDivineEvent(n.center, 0.0f, 0.2f);
-      check(world.villages[1].belief > nb,
+      float nb = n.belief[0], pb = world.home().belief[0];
+      world.notifyDivineEvent(0, n.center, 0.0f, 0.2f);
+      check(world.villages[1].belief[0] > nb,
             "witnesses at the neutral village believed");
-      check(world.home().belief == pb, "your own village saw nothing");
+      check(world.home().belief[0] == pb, "your own village saw nothing");
     }
+  }
+
+  // [12] Gods & conversion: the ratchet.
+  std::printf("[12] gods & conversion\n");
+  {
+    World w8;
+    w8.generate(seed);
+    const float dt12 = 1.0f / 60.0f;
+    check(w8.gods[0].active && w8.gods[0].isPlayer, "the player god reigns");
+    check(!w8.gods[1].active, "no rival is active yet");
+    check(w8.villages.size() >= 2, "a neutral village waits to be courted");
+
+    // Court the nearest neutral with repeated impressive acts.
+    Village& n = w8.villages[1];
+    int guard = 0;
+    while (n.owner != 0 && guard++ < 200) {
+      w8.notifyDivineEvent(0, n.center, 0.0f, 0.15f);
+      for (int s = 0; s < 30; ++s) w8.update(dt12);
+    }
+    std::printf("      converted after %d offerings | belief %.2f\n", guard,
+                n.belief[0]);
+    check(n.owner == 0, "the neutral village converted to you");
+    check(w8.insideInfluence(n.center, 0), "its influence ring now answers to you");
+    check(n.belief[0] > 0.4f, "its faith stands high");
+
+    // Their worship now fills YOUR pool.
+    int devotee = -1;
+    for (std::size_t j = 0; j < n.villagers.size(); ++j)
+      if (n.villagers[j].alive && n.villagers[j].job == Job::None &&
+          n.villagers[j].scale > 0.9f)
+        devotee = static_cast<int>(j);
+    check(devotee >= 0, "an idle adult can be devoted");
+    if (devotee >= 0) {
+      n.villagers[devotee].job = Job::Worshipper;
+      w8.dayCycle.t = 0.40f;
+      w8.dayCycle.secondsPerDay = 240.0f;
+      w8.gods[0].mana = 10.0f;
+      for (int s = 0; s < static_cast<int>(60.0f / dt12); ++s) w8.update(dt12);
+      std::printf("      converted village's worship: mana %.1f\n", w8.gods[0].mana);
+      check(w8.gods[0].mana > 10.0f, "their worship fills your pool");
+    }
+
+    // The ratchet: an owned village resists overwhelming faith alone...
+    w8.gods[1].active = true;  // a rival stirs (M5 embodies it)
+    Village& h = w8.home();
+    h.belief[1] = tune::kStealBelief + 0.05f;
+    h.belief[0] = tune::kStealOwnerBelow + 0.10f;
+    w8.update(dt12);
+    check(h.owner == 0, "an owned village resists while its owner holds");
+    // ...and falls only when the owner has lapsed.
+    h.belief[0] = tune::kStealOwnerBelow - 0.05f;
+    w8.update(dt12);
+    check(h.owner == 1, "a lapsed village falls to overwhelming faith");
+
+    // Neutrals need a clear lead, not just a majority.
+    if (w8.villages.size() >= 3) {
+      Village& m = w8.villages[2];
+      m.belief[0] = 0.55f;
+      m.belief[1] = 0.50f;
+      w8.update(dt12);
+      check(m.owner == -1, "a contested neutral stays neutral");
+      m.belief[1] = 0.30f;
+      w8.update(dt12);
+      check(m.owner == 0, "a clear lead converts");
+    }
+
+    // Gift attribution: a bundle hurled onto their pile is credited to you.
+    World w9;
+    w9.generate(seed);
+    Village& n2 = w9.villages[1];
+    float nb = n2.belief[0];
+    Prop gift;
+    gift.type = PropType::Food;
+    gift.resource = 3.0f;
+    gift.radius = 0.45f;
+    gift.thrownByGod = 0;
+    gift.pos = n2.storagePos() + glm::vec3(0.0f, 3.0f, 0.0f);
+    gift.asleep = false;
+    w9.spawnProp(gift);
+    for (int s = 0; s < 300; ++s) w9.update(dt12);
+    check(w9.villages[1].belief[0] > nb,
+          "a gift landed on their pile is credited to you");
   }
 
   // [6] Three-day economy & schedule soak. Days are shrunk to 240 s - short
@@ -1912,7 +2021,7 @@ int runHeadless(std::uint32_t seed, int steps) {
         "noon active %.0f%% | mana %.0f | belief %.2f\n",
         v2.wood, v2.woodProduced, v2.food, v2.foodProduced, v2.mealsEaten,
         v2.population(), stage3Houses, v2.scaffoldsCrafted, v2.deaths, v2.stuckEvents,
-        midnightSleep * 100.0f, noonActive * 100.0f, w2.temple.mana, v2.belief);
+        midnightSleep * 100.0f, noonActive * 100.0f, w2.gods[0].mana, v2.belief[0]);
     int totalDeaths = 0;
     bool allProduced = true, allAte = true;
     for (const Village& v : w2.villages) {
@@ -1923,7 +2032,7 @@ int runHeadless(std::uint32_t seed, int steps) {
     check(totalDeaths == 0, "no village loses anybody in health");
     check(allProduced, "every village (neutral too) produced food");
     check(allAte, "every village ate");
-    check(w2.temple.mana > tune::kManaStart, "worship filled the mana pool");
+    check(w2.gods[0].mana > tune::kManaStart, "worship filled the mana pool");
     check(finite, "all positions finite");
     check(inBounds, "everyone stayed on the island");
     check(v2.woodProduced > 0, "wood was produced");

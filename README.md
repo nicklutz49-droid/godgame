@@ -10,7 +10,35 @@ screen is procedural placeholder art. There is no creature, by design.
 ![The temple](docs/temple.png)
 ![The island](docs/island.png)
 
-## Current slice: many villages
+## Current slice: gods & conversion
+
+Belief is territory now (master plan: [docs/plan-game.md](docs/plan-game.md)).
+Villages keep a belief score **per god**, and enough faith flips a village to
+your side:
+
+- **Per-god belief** — every divine act is attributed to the god who performed
+  it: grabs, throws, gifts, burials, miracles. Witnesses credit *that* god.
+  Deaths still terrify without crediting anyone, and they stain the owner's
+  standing.
+- **The conversion ratchet** — a neutral village joins the god whose belief
+  clears 50 % with a clear lead over every rival. An *owned* village is far
+  stickier: a challenger needs overwhelming faith (85 %) while the owner's has
+  collapsed below 35 %. Conversion suppresses rival belief, scatters a few
+  frightened villagers, and rings out an awe event for the new patron —
+  villages change hands rarely, and it means something.
+- **Converted villages are yours for real** — they project your influence
+  rings, their totem accepts Worshippers, their dance feeds *your* mana pool,
+  their store receives your gifts.
+- **Hurled gifts remember their sender** — throw food or wood across the map
+  into a neutral village and whoever picks it up (or the pile that absorbs
+  it) believes a little more in *you*. That's the long-range conversion tool
+  the influence rings can't reach.
+- **Ownership on the map** — totems tint with their owner's color (the player
+  is gold), and a conversion fires a pulse of light and a message.
+- Under the hood: mana, temple, and influence all moved onto `World::gods[]`
+  — the crimson rival god (M5) is a data change away.
+
+## Previous slice: many villages
 
 The strategic map exists. Every island now founds the player's home village
 **plus neutral villages** on the best remaining sites (separated by 130 m+),
@@ -19,8 +47,7 @@ sleeping, raising children — with no god over them:
 
 - **Neutral villages** have no Worshipper and generate no mana; their belief
   in you starts near zero. They sit outside your influence rings — visible,
-  self-sufficient, and unreachable until your reach grows. (Conversion — the
-  ratchet that wins them over — is the next slice.)
+  self-sufficient, and unreachable until your reach grows.
 - **Witness routing**: every divine act now reaches whichever village saw
   it. Impress a neutral village's people and *their* belief in you rises.
 - **Per-village everything**: stores, fields, claims, burials, births,
@@ -179,7 +206,7 @@ godgame                       play
 godgame --seed 1234           play a specific island
 godgame --headless [steps]    no window: world-gen, physics, village economy,
                               hand-interaction and determinism self-tests
-godgame --screenshot out.bmp [frames] [far|close|village|night]
+godgame --screenshot out.bmp [frames] [far|close|village|night|temple|roster]
 ```
 
 ## Roadmap
@@ -188,13 +215,13 @@ The full arc to the real game — **skirmish against AI gods on handcrafted
 maps**, won by converting villages until the enemy temple falls — is laid out
 in [docs/plan-game.md](docs/plan-game.md). The short version:
 
-1. Scaffolds & the buildable village (workshops craft scaffolds; combine
+1. ✅ Scaffolds & the buildable village (workshops craft scaffolds; combine
    1-7 and place them: abodes, store, crèche, graveyard, field, village
    center, miracle dispenser, wonder)
-2. Mortality & burial (population becomes a real resource)
-3. Many villages (neutrals, the big multi-village refactor)
-4. Gods & conversion (per-god belief, the ownership ratchet)
-5. The rival AI god (fully symmetric, an embodied enemy hand)
+2. ✅ Mortality & burial (population becomes a real resource)
+3. ✅ Many villages (neutrals, the big multi-village refactor)
+4. ✅ Gods & conversion (per-god belief, the ownership ratchet)
+5. The rival AI god (fully symmetric, an embodied enemy hand) ← next
 6. In-game map editor → 7. skirmish shell → 8. balance — then story mode
 
 Also on the list: more miracles, original B&W asset loaders, sound.

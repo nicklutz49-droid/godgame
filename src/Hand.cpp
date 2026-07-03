@@ -165,6 +165,8 @@ void Hand::release(World& world) {
     if (speed > kMaxThrowSpeed) v *= kMaxThrowSpeed / speed;
     int idx = held.index;
     world.throwProp(idx, v);
+    // Hurled gifts remember their sender until someone receives them.
+    if (!gentle) world.props[idx].thrownByGod = 0;
     // Gentle placement over a storage pad deposits resources immediately -
     // a gift from the god, and that village believes a little more for it.
     Prop& p = world.props[idx];
@@ -173,7 +175,7 @@ void Hand::release(World& world) {
       for (Village& vlg : world.villages) {
         if (!vlg.founded || !vlg.inStorageRadius(p.pos)) continue;
         vlg.absorbProp(world, idx);
-        world.notifyDivineEvent(p.pos, 0.0f, tune::kAweGift);
+        world.notifyDivineEvent(0, p.pos, 0.0f, tune::kAweGift);
         break;
       }
     }

@@ -45,17 +45,25 @@ struct Prop {
   float restTimer = 0.0f;
   float resource = 0.0f; // trees: chop work remaining; food: meals it grants
   float age = 0.0f;      // seconds since spawn (bodies rot past kCorpseRotDays)
-  int claimedBy = -1;    // villager index working this prop
-  int carrier = -1;      // villager index carrying this prop
+  int claimedBy = -1;    // packed villager id working this prop
+  int carrier = -1;      // packed villager id carrying this prop
+  int thrownByGod = -1;  // gifts remember their sender until received
 };
 
-// The god's seat of power: stands apart from any village, stores the mana
-// pool that worship fills and miracles spend, and projects the base
+// A god's seat of power: stands apart from any village and projects the base
 // influence ring.
 struct Temple {
   bool founded = false;
   glm::vec3 pos{0.0f};
   float yaw = 0.0f;
+};
+
+// A god: the player (id 0) or a rival (M5). Owns a temple and the mana pool
+// that its villages' worship fills and its miracles spend.
+struct God {
+  bool active = false;
+  bool isPlayer = false;
+  Temple temple;
   float mana = 0.0f;
   float manaMax = 100.0f;
 };
@@ -71,7 +79,7 @@ class World {
   // villages[0] is the player's home village (owner 0); the rest start
   // neutral (owner -1). Indices are stable for the whole session.
   std::vector<Village> villages;
-  Temple temple;
+  God gods[tune::kMaxGods];
   DayCycle dayCycle;
 
   Village& home() { return villages[0]; }
@@ -95,12 +103,19 @@ class World {
   // Reuses a dead slot when possible; returns the prop's index.
   int spawnProp(const Prop& p);
 
-  // Is this point within the god's reach (temple ring or any OWNED village's
-  // ring)? Neutral villages project nothing.
-  bool insideInfluence(const glm::vec3& p) const;
+  // Is this point within a god's reach (their temple ring or any village
+  // they own)? Neutral villages project nothing.
+  bool insideInfluence(const glm::vec3& p, int god = 0) const;
 
-  // Divine acts ripple to every village whose people can see them.
-  void notifyDivineEvent(const glm::vec3& where, float fear, float awe);
+  // Divine acts ripple to every village whose people can see them; the awe
+  // credits the acting god's standing there.
+  void notifyDivineEvent(int god, const glm::vec3& where, float fear, float awe);
+
+  // The conversion ratchet, checked continuously: neutrals join a clearly
+  // leading god; owned villages flip only to overwhelming faith over a
+  // lapsed owner. Flips are ceremonies (scatter, fear, suppressed rivals).
+  void updateOwnership();
+  void convertVillage(int villageIdx, int newOwner);
 
   // Static-obstacle spatial grid (trees/rocks/stumps), rebuilt each update;
   // steering queries it instead of scanning every prop.
@@ -117,10 +132,10 @@ class World {
       }
   }
 
-  // Rain food from the sky at p. Fails (returns false) outside influence or
-  // with insufficient mana (a charged Miracle Dispenser within range covers
-  // the cost first). Deterministic per cast via its own stream.
-  bool castFoodMiracle(const glm::vec3& p);
+  // Rain food from the sky at p, in the acting god's name. Fails outside
+  // that god's influence or with insufficient mana (a charged Miracle
+  // Dispenser in an owned village covers the cost first). Deterministic.
+  bool castFoodMiracle(const glm::vec3& p, int god = 0);
 
   // --- scaffold verbs (called by the hand; driven directly by tests) ---
 

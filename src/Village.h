@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "Noise.h"
+#include "Tuning.h"
 #include "Villager.h"
 
 class World;
@@ -59,16 +60,19 @@ struct FarmCell {
 class Village {
  public:
   bool founded = false;
-  // -1 = neutral, 0 = the player god. (M4 formalizes gods; the field exists
-  // now so ownership logic lands in one place.)
+  // -1 = neutral, otherwise the owning god's id.
   int owner = -1;
   glm::vec3 center{0.0f};
   float radius = 32.0f;          // flattened terrace / footprint radius
 
-  // Faith in the player, 0..1. Raised by witnessed divine acts, sustained by
-  // worship, decaying toward a floor. Scales worship mana output and the
-  // village's influence ring.
-  float belief = 0.25f;
+  // Faith in EACH god, 0..1. Raised by witnessed divine acts, sustained by
+  // worship, decaying toward a floor. The owner's share scales worship mana
+  // output and the village's influence ring; the ratchet compares them.
+  float belief[tune::kMaxGods] = {};
+
+  float beliefIn(int god) const {
+    return god >= 0 && god < tune::kMaxGods ? belief[god] : 0.0f;
+  }
 
   int wood = 0;
   int food = 0;
@@ -144,9 +148,10 @@ class Village {
   // Absorb a resource prop (log/food/tree) into the stores.
   void absorbProp(World& world, int propIdx);
 
-  // Witness bus for divine acts. Villagers within 30 m gain `fear`; belief
-  // rises by `awe` scaled by how much of the village saw it.
-  void notifyDivineEvent(const glm::vec3& where, float fear, float awe);
+  // Witness bus for divine acts. Villagers within 30 m gain `fear`; the
+  // acting god's belief here rises by `awe` scaled by how much of the
+  // village saw it (god -1 = fear only).
+  void notifyDivineEvent(int god, const glm::vec3& where, float fear, float awe);
 
   // How far the hand's power extends around this village (grows with belief).
   float influenceRadius() const;

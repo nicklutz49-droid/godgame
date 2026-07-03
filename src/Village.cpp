@@ -108,7 +108,8 @@ void Village::plan(World& world, std::uint32_t seed, glm::vec2 site,
 
   wood = tune::kStartWood;
   food = tune::kStartFood;
-  belief = owner == 0 ? tune::kBeliefStart : tune::kNeutralBeliefStart;
+  for (int g = 0; g < tune::kMaxGods; ++g) belief[g] = tune::kNeutralBeliefStart;
+  if (owner >= 0) belief[owner] = tune::kBeliefStart;
 }
 
 void Village::spawnVillagers(World& world, std::uint32_t seed, int villageIdx) {
@@ -146,21 +147,28 @@ void Village::step(World& world, float dt) {
   float dayFrac = dt / world.dayCycle.secondsPerDay;
   float sun = 0.25f + 0.75f * world.dayCycle.daylight();  // crops rest at night
 
-  // Faith fades unless the god stays present (worship counteracts this).
-  // A Wonder slows the fade; a tended Graveyard quietly sustains it; a body
-  // left rotting near the village is an accusation nobody forgets.
-  float decay = tune::kBeliefDecayPerDay;
-  if (insideWonderAura(center)) decay *= tune::kWonderDecayFactor;
-  decay -= static_cast<float>(countCompleted(BuildingType::Graveyard)) *
-           tune::kGraveyardBeliefPerDay;
+  // Faith fades unless a god stays present (worship counteracts this).
+  // A Wonder slows the owner's fade; a tended Graveyard sustains it; a body
+  // left rotting near the village is an accusation against whoever reigns.
+  float rot = 0.0f;
   for (const Prop& p : world.props) {
     if (!p.alive || p.type != PropType::Body || p.carrier >= 0 || p.held) continue;
     if (p.age > tune::kCorpseRotDays * world.dayCycle.secondsPerDay &&
         glm::distance(xz(p.pos), xz(center)) < 60.0f)
-      decay += tune::kCorpseBeliefPerDay;
+      rot += tune::kCorpseBeliefPerDay;
   }
-  float floor = owner == 0 ? tune::kBeliefFloor : tune::kNeutralBeliefFloor;
-  belief = std::max(floor, belief - decay * dayFrac);
+  for (int g = 0; g < tune::kMaxGods; ++g) {
+    float decay = tune::kBeliefDecayPerDay;
+    bool isOwner = g == owner;
+    if (isOwner) {
+      if (insideWonderAura(center)) decay *= tune::kWonderDecayFactor;
+      decay -= static_cast<float>(countCompleted(BuildingType::Graveyard)) *
+               tune::kGraveyardBeliefPerDay;
+      decay += rot;
+    }
+    float floor = isOwner ? tune::kBeliefFloor : tune::kNeutralBeliefFloor;
+    belief[g] = std::max(floor, belief[g] - decay * dayFrac);
+  }
 
   for (FarmCell& c : farmCells) {
     c.tendedTimer = std::max(0.0f, c.tendedTimer - dt);
@@ -303,7 +311,8 @@ bool Village::buryBody(World& world, int propIdx) {
   body.claimedBy = -1;
   ++buildings[g].charges;  // a fresh grave (rendered as headstones)
   ++burials;
-  belief = std::min(1.0f, belief + tune::kBurialBelief);  // dignity matters
+  if (owner >= 0)  // dignity matters - to whoever reigns here
+    belief[owner] = std::min(1.0f, belief[owner] + tune::kBurialBelief);
   return true;
 }
 
@@ -425,9 +434,11 @@ void Village::absorbProp(World& world, int propIdx) {
   p.claimedBy = -1;
 }
 
-void Village::notifyDivineEvent(const glm::vec3& where, float fear, float awe) {
+void Village::notifyDivineEvent(int god, const glm::vec3& where, float fear,
+                                float awe) {
   // Every divine act funnels through here: fear ripples out to individual
-  // witnesses, and belief rises by how much of the village saw it.
+  // witnesses, and the acting god's standing rises by how much of the
+  // village saw it.
   int witnesses = 0;
   for (Villager& v : villagers) {
     if (v.inside || !v.alive) continue;
@@ -438,15 +449,16 @@ void Village::notifyDivineEvent(const glm::vec3& where, float fear, float awe) {
         v.fear = std::min(1.0f, v.fear + fear * (1.0f - d / 30.0f));
     }
   }
-  if (awe > 0.0f && population() > 0) {
+  if (god >= 0 && god < tune::kMaxGods && awe > 0.0f && population() > 0) {
     if (insideWonderAura(where)) awe *= tune::kWonderAweFactor;
-    belief = std::min(1.0f, belief + awe * static_cast<float>(witnesses) /
-                                        static_cast<float>(population()));
+    belief[god] = std::min(1.0f, belief[god] + awe * static_cast<float>(witnesses) /
+                                     static_cast<float>(population()));
   }
 }
 
 float Village::influenceRadius() const {
-  return tune::kVillageInfluenceBase + belief * tune::kVillageInfluenceScale +
+  return tune::kVillageInfluenceBase +
+         beliefIn(owner) * tune::kVillageInfluenceScale +
          (centerLevel() - 1.0f) * tune::kCenterInfluencePerLevel;
 }
 

@@ -94,6 +94,15 @@ inline constexpr float kVillageMinSeparation = 130.0f;
 inline constexpr float kNeutralBeliefStart = 0.05f;
 inline constexpr float kNeutralBeliefFloor = 0.02f;
 
+// --- gods & conversion (the ratchet) ---
+inline constexpr int kMaxGods = 2;               // the player + one rival (M5)
+inline constexpr float kConvertNeutralBelief = 0.5f;  // neutral joins a god here...
+inline constexpr float kConvertLeadMargin = 0.1f;     // ...if clearly ahead of rivals
+inline constexpr float kStealBelief = 0.85f;     // stealing an OWNED village needs
+inline constexpr float kStealOwnerBelow = 0.35f; // overwhelming faith + a lapsed owner
+inline constexpr float kConversionScatter = 0.35f;  // fraction who panic at the flip
+inline constexpr float kAweGiftThrown = 0.02f;   // a gift hurled from afar, received
+
 // --- worship, belief, mana, miracles ---
 inline constexpr float kManaStart = 20.0f;
 inline constexpr float kManaMax = 100.0f;

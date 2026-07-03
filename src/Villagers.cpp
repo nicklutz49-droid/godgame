@@ -97,10 +97,12 @@ void villagerKill(World& w, Village& vil, int vi, int idx, DeathCause cause) {
   body.asleep = false;
   w.spawnProp(body);
 
-  // Every death shakes the village's faith, and the sight of it terrifies.
-  float floor = vil.owner == 0 ? tune::kBeliefFloor : tune::kNeutralBeliefFloor;
-  vil.belief = std::max(floor, vil.belief - tune::kBeliefDeathPenalty);
-  w.notifyDivineEvent(v.pos, 0.85f, 0.0f);
+  // Every death shakes the village's faith in its patron, and terrifies.
+  if (vil.owner >= 0) {
+    vil.belief[vil.owner] = std::max(
+        tune::kBeliefFloor, vil.belief[vil.owner] - tune::kBeliefDeathPenalty);
+  }
+  w.notifyDivineEvent(-1, v.pos, 0.85f, 0.0f);
 }
 
 void goHome(Village& vil, Villager& v) {
@@ -517,6 +519,11 @@ void workCycleComplete(World& w, Village& vil, int vi, int i) {
     if (p.type == PropType::Log || p.type == PropType::Food ||
         p.type == PropType::Body) {
       // Shoulder it: resources head for the pile, the dead for the graveyard.
+      // A gift hurled here by a god is received - and remembered.
+      if (p.thrownByGod >= 0 && p.type != PropType::Body) {
+        w.notifyDivineEvent(p.thrownByGod, p.pos, 0.0f, tune::kAweGiftThrown);
+        p.thrownByGod = -1;
+      }
       p.carrier = myId;
       p.claimedBy = -1;
       v.carriedProp = v.targetProp;
@@ -728,11 +735,12 @@ void steer(World& w, Village& vil, int vi, int i, float dt) {
     float rr = p.radius * 0.8f + 0.5f;
     obstacles[obstacleCount++] = {xz(p.pos), rr * rr};
   });
-  if (w.temple.founded && obstacleCount < 12) {
-    glm::vec2 d = glm::vec2(w.temple.pos.x, w.temple.pos.z) - xz(v.pos);
+  for (const God& god : w.gods) {
+    if (!god.active || !god.temple.founded || obstacleCount >= 12) continue;
+    glm::vec2 tp(god.temple.pos.x, god.temple.pos.z);
+    glm::vec2 d = tp - xz(v.pos);
     if (glm::dot(d, d) < 10.0f * 10.0f)
-      obstacles[obstacleCount++] = {glm::vec2(w.temple.pos.x, w.temple.pos.z),
-                                    4.5f * 4.5f};
+      obstacles[obstacleCount++] = {tp, 4.5f * 4.5f};
   }
 
   static const float offsets[5] = {0.0f, -0.55f, 0.55f, -1.15f, 1.15f};
@@ -1158,16 +1166,17 @@ void updateVillage(World& world, Village& vil, int vi, float dt) {
           v.pos.y = world.terrain.heightAt(v.pos.x, v.pos.z);
           v.yaw = std::atan2(totem.pos.x - v.pos.x, totem.pos.z - v.pos.z);
           v.walkPhase += dt * 4.2f;
-          if (vil.owner == 0 && world.temple.founded) {
-            float mult = (0.5f + 1.5f * vil.belief) *
+          if (vil.owner >= 0 && world.gods[vil.owner].active) {
+            God& god = world.gods[vil.owner];
+            float mult = (0.5f + 1.5f * vil.belief[vil.owner]) *
                          vil.centerManaMultiplier();
             float add = tune::kManaPerWorshipperPerDay * mult * dayFrac;
-            float space = world.temple.manaMax - world.temple.mana;
+            float space = god.manaMax - god.mana;
             if (add <= space) {
-              world.temple.mana += add;
+              god.mana += add;
             } else {
               // Pool full: the overflow charges a Miracle Dispenser instead.
-              world.temple.mana = world.temple.manaMax;
+              god.mana = god.manaMax;
               for (Building& b : vil.buildings) {
                 if (b.type != BuildingType::Dispenser || b.stage != 3) continue;
                 vil.dispenserFill += add - space;
@@ -1180,8 +1189,10 @@ void updateVillage(World& world, Village& vil, int vi, float dt) {
               }
             }
           }
-          vil.belief = std::min(
-              1.0f, vil.belief + tune::kBeliefFromWorshipPerDay * dayFrac);
+          if (vil.owner >= 0)
+            vil.belief[vil.owner] =
+                std::min(1.0f, vil.belief[vil.owner] +
+                                   tune::kBeliefFromWorshipPerDay * dayFrac);
           break;
         }
         v.workTimer -= dt;
@@ -1276,7 +1287,7 @@ void villagerGrabbed(World& world, int villageIdx, int idx) {
   releaseClaims(world, vil, villageIdx, idx, v);
   v.fear = 1.0f;
   v.pendingAssign = false;
-  world.notifyDivineEvent(v.pos, 0.55f, tune::kAweGrab);
+  world.notifyDivineEvent(0, v.pos, 0.55f, tune::kAweGrab);
 }
 
 void villagerReleased(World& world, int villageIdx, int idx,
@@ -1298,7 +1309,7 @@ void villagerReleased(World& world, int villageIdx, int idx,
     glm::vec3 spinAxis = glm::cross(
         glm::normalize(vel + glm::vec3(0, 0.001f, 0)), glm::vec3(0, 1, 0));
     v.angVel = spinAxis * std::min(speed * 0.12f, 5.0f);
-    world.notifyDivineEvent(v.pos, 0.8f, tune::kAweThrow);
+    world.notifyDivineEvent(0, v.pos, 0.8f, tune::kAweThrow);
   }
 }
 

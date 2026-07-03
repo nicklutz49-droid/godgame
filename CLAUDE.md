@@ -6,14 +6,28 @@ behind the existing interfaces (Terrain, Mesh). Personal project, no
 distribution. Slices so far: living village (docs/plan-villagers.md),
 worship/belief/mana/temple + food miracle (docs/plan-worship.md), scaffolds &
 the building roster (docs/plan-scaffolds.md), mortality & burial, multi-
-village worlds with neutrals. Master arc: docs/plan-game.md (next: M4 gods &
-conversion).
+village worlds with neutrals, gods & conversion (per-god belief + ownership
+ratchet). Master arc: docs/plan-game.md (next: M5 the rival AI god).
 
 Multi-village invariants: `World::villages[0]` is the player's home village;
 indices are stable for the session. Prop `claimedBy`/`carrier` store packed
 cross-village ids from `villagerId(village, index)`; farm-cell claims stay
 village-local. Divine acts route through `World::notifyDivineEvent` (all
-villages); only owned villages (owner == 0) project influence or feed mana.
+villages); only villages owned by a god project that god's influence or feed
+that god's mana.
+
+Gods invariants (M4): gods live in `World::gods[tune::kMaxGods]`
+(`gods[0]` = the player); each active god owns a `Temple` and a mana pool —
+there is no global temple/mana anymore. Every divine act carries the acting
+god: `notifyDivineEvent(god, where, fear, awe)` (god = -1 for unattributed
+fear, e.g. deaths). Village ownership changes ONLY through
+`World::updateOwnership` → `convertVillage` (the ratchet: neutrals need
+belief > kConvertNeutralBelief with a kConvertLeadMargin lead; owned villages
+flip only when a challenger clears kStealBelief while the owner is below
+kStealOwnerBelow) — never assign `Village::owner` directly. Hand throws stamp
+`Prop::thrownByGod`; villager pickup or storage settle credits that god and
+clears the stamp. `insideInfluence(p, god)` is per god. The headless checksum
+covers per-god beliefs, owners, and mana — keep new god state inside it.
 
 ## Build & test
 
@@ -80,8 +94,9 @@ for SDL2/glm when system packages are missing — don't add hard system deps.
   jobs (incl. Worshipper, whose dance is continuous) are flat per-job state
   machines in Villagers.cpp. Steering only, no A*.
 - Belief/mana flow through fixed funnels: all divine acts call
-  `Village::notifyDivineEvent(where, fear, awe)`; only the worship dance adds
-  mana (`World::temple.mana`); only `World::castFoodMiracle` (and future
-  miracles) spend it. Influence checks go through `World::insideInfluence` —
-  the hand and future casts must respect it.
+  `Village::notifyDivineEvent(god, where, fear, awe)`; only the worship dance
+  adds mana (`World::gods[owner].mana`); only `World::castFoodMiracle(p, god)`
+  (and future miracles) spend it. Influence checks go through
+  `World::insideInfluence(p, god)` — the hand and future casts must respect
+  it.
 - Keep everything working on llvmpipe (no GL extensions beyond 3.3 core).

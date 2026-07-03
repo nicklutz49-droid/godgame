@@ -110,7 +110,11 @@ void World::generate(std::uint32_t seed) {
                      hard);
   }
 
-  temple = Temple{};
+  for (God& g : gods) g = God{};
+  gods[0].active = true;
+  gods[0].isPlayer = true;
+  gods[0].mana = tune::kManaStart;
+  gods[0].manaMax = tune::kManaMax;
   foundTemple();               // also flattens; must precede prop scatter
   scatterProps();
   for (std::size_t v = 0; v < villages.size(); ++v)
@@ -124,6 +128,7 @@ void World::generate(std::uint32_t seed) {
 void World::foundTemple() {
   if (villages.empty() || !home().founded) return;
   const Village& village = home();
+  Temple& temple = gods[0].temple;
   // Just outside the village on the first workable compass direction. The
   // field direction (index 2) is excluded so its terrace is never disturbed.
   static const glm::vec2 kDirs[7] = {
@@ -163,17 +168,17 @@ void World::foundTemple() {
   temple.founded = true;
   temple.pos = glm::vec3(best.x, terrain.heightAt(best.x, best.y), best.y);
   temple.yaw = std::atan2(village.center.x - best.x, village.center.z - best.y);
-  temple.mana = tune::kManaStart;
-  temple.manaMax = tune::kManaMax;
 }
 
-bool World::insideInfluence(const glm::vec3& p) const {
+bool World::insideInfluence(const glm::vec3& p, int god) const {
+  if (god < 0 || god >= tune::kMaxGods || !gods[god].active) return false;
+  const Temple& temple = gods[god].temple;
   if (temple.founded &&
       glm::distance(glm::vec2(p.x, p.z), glm::vec2(temple.pos.x, temple.pos.z)) <
           tune::kTempleInfluence)
     return true;
   for (const Village& v : villages) {
-    if (!v.founded || v.owner != 0) continue;  // neutral villages project nothing
+    if (!v.founded || v.owner != god) continue;  // neutrals project nothing
     if (glm::distance(glm::vec2(p.x, p.z), glm::vec2(v.center.x, v.center.z)) <
         v.influenceRadius())
       return true;
@@ -181,8 +186,59 @@ bool World::insideInfluence(const glm::vec3& p) const {
   return false;
 }
 
-void World::notifyDivineEvent(const glm::vec3& where, float fear, float awe) {
-  for (Village& v : villages) v.notifyDivineEvent(where, fear, awe);
+void World::notifyDivineEvent(int god, const glm::vec3& where, float fear,
+                              float awe) {
+  for (Village& v : villages) v.notifyDivineEvent(god, where, fear, awe);
+}
+
+// The conversion ratchet. Neutral villages join a god whose standing clearly
+// leads; owned villages are stolen only by overwhelming faith over a lapsed
+// owner - mostly forward progress, real defense.
+void World::updateOwnership() {
+  for (std::size_t vi = 0; vi < villages.size(); ++vi) {
+    Village& v = villages[vi];
+    if (!v.founded) continue;
+    // The strongest challenger.
+    int best = -1;
+    float bestB = 0.0f, secondB = 0.0f;
+    for (int g = 0; g < tune::kMaxGods; ++g) {
+      if (!gods[g].active || g == v.owner) continue;
+      if (v.belief[g] > bestB) {
+        secondB = bestB;
+        bestB = v.belief[g];
+        best = g;
+      } else {
+        secondB = std::max(secondB, v.belief[g]);
+      }
+    }
+    if (best < 0) continue;
+    if (v.owner < 0) {
+      if (bestB > tune::kConvertNeutralBelief &&
+          bestB > secondB + tune::kConvertLeadMargin)
+        convertVillage(static_cast<int>(vi), best);
+    } else {
+      if (bestB > tune::kStealBelief &&
+          v.belief[v.owner] < tune::kStealOwnerBelow)
+        convertVillage(static_cast<int>(vi), best);
+    }
+  }
+}
+
+void World::convertVillage(int villageIdx, int newOwner) {
+  Village& v = villages[villageIdx];
+  v.owner = newOwner;
+  // The new faith suppresses the others.
+  for (int g = 0; g < tune::kMaxGods; ++g)
+    if (g != newOwner) v.belief[g] *= 0.5f;
+  // The ceremony: some villagers scatter in terror of their new master;
+  // worship at the totem now feeds the new owner automatically.
+  XorShift rng(seed_ ^ (static_cast<std::uint32_t>(villageIdx) * 2654435761u +
+                        static_cast<std::uint32_t>(newOwner) * 97u));
+  for (Villager& p : v.villagers) {
+    if (!p.alive || p.inside) continue;
+    if (rng.uniform() < tune::kConversionScatter) p.fear = 1.0f;
+  }
+  v.notifyDivineEvent(newOwner, v.center, 0.5f, 0.0f);
 }
 
 void World::rebuildObstacleGrid() {
@@ -202,13 +258,14 @@ void World::rebuildObstacleGrid() {
   }
 }
 
-bool World::castFoodMiracle(const glm::vec3& p) {
-  if (!temple.founded || !insideInfluence(p)) return false;
+bool World::castFoodMiracle(const glm::vec3& p, int god) {
+  if (god < 0 || god >= tune::kMaxGods || !gods[god].active) return false;
+  if (!gods[god].temple.founded || !insideInfluence(p, god)) return false;
 
   // A charged Miracle Dispenser within reach covers the cost first.
   Building* dispenser = nullptr;
   for (Village& v : villages) {
-    if (v.owner != 0) continue;
+    if (v.owner != god) continue;
     for (Building& b : v.buildings)
       if (b.type == BuildingType::Dispenser && b.stage == 3 && b.charges > 0 &&
           glm::distance(glm::vec2(b.pos.x, b.pos.z), glm::vec2(p.x, p.z)) <
@@ -219,8 +276,8 @@ bool World::castFoodMiracle(const glm::vec3& p) {
   if (dispenser) {
     --dispenser->charges;
   } else {
-    if (temple.mana < tune::kFoodMiracleCost) return false;
-    temple.mana -= tune::kFoodMiracleCost;
+    if (gods[god].mana < tune::kFoodMiracleCost) return false;
+    gods[god].mana -= tune::kFoodMiracleCost;
   }
 
   XorShift rng(seed_ ^ (++miracleCounter_ * 0x9E3779B9u));
@@ -241,7 +298,7 @@ bool World::castFoodMiracle(const glm::vec3& p) {
 
   // Food from heaven is the most convincing argument there is - to whichever
   // village watches it fall.
-  notifyDivineEvent(p, 0.05f, tune::kAweMiracle);
+  notifyDivineEvent(god, p, 0.05f, tune::kAweMiracle);
   return true;
 }
 
@@ -300,8 +357,9 @@ void World::scatterProps() {
     bool inVillage = false;
     for (const Village& v : villages) inVillage |= v.insideFootprint(x, z);
     if (inVillage) continue;
-    if (temple.founded && glm::distance(glm::vec2(x, z),
-                                        glm::vec2(temple.pos.x, temple.pos.z)) < 18.0f)
+    if (gods[0].temple.founded &&
+        glm::distance(glm::vec2(x, z), glm::vec2(gods[0].temple.pos.x,
+                                                 gods[0].temple.pos.z)) < 18.0f)
       continue;
     float forest = noise::fbm(x * 0.016f, z * 0.016f, 3, seed_ + 31u);
     if (forest < 0.52f && !(forest > 0.40f && rng.uniform() < 0.15f)) continue;
@@ -331,8 +389,9 @@ void World::scatterProps() {
     bool inVillage = false;
     for (const Village& v : villages) inVillage |= v.insideFootprint(x, z);
     if (inVillage) continue;
-    if (temple.founded && glm::distance(glm::vec2(x, z),
-                                        glm::vec2(temple.pos.x, temple.pos.z)) < 18.0f)
+    if (gods[0].temple.founded &&
+        glm::distance(glm::vec2(x, z), glm::vec2(gods[0].temple.pos.x,
+                                                 gods[0].temple.pos.z)) < 18.0f)
       continue;
 
     Prop p;
@@ -418,7 +477,10 @@ void World::update(float dt) {
             p.type == PropType::Tree) {
           for (Village& v : villages) {
             if (!v.founded || !v.inStorageRadius(p.pos)) continue;
+            int sender = p.thrownByGod;
             v.absorbProp(*this, static_cast<int>(idx));
+            if (!p.alive && sender >= 0)  // a skill-shot gift, received
+              notifyDivineEvent(sender, p.pos, 0.0f, tune::kAweGift);
             absorbed = true;
             break;
           }
@@ -440,6 +502,7 @@ void World::update(float dt) {
 
   for (Village& v : villages)
     if (v.founded) v.step(*this, dt);
+  updateOwnership();
 }
 
 int World::tryCombineScaffold(int scaffoldIdx) {
@@ -514,8 +577,9 @@ int World::scaffoldHostVillage(const glm::vec3& pos, int count) const {
       }
       if (other.insideAnyField(pos.x, pos.z, footprint * 0.5f + 1.0f)) return -1;
     }
-    if (temple.founded &&
-        glm::distance(glm::vec2(temple.pos.x, temple.pos.z), p2) < 14.0f)
+    if (gods[0].temple.founded &&
+        glm::distance(glm::vec2(gods[0].temple.pos.x, gods[0].temple.pos.z), p2) <
+            14.0f)
       return -1;
     for (const Prop& p : props) {
       if (!p.alive) continue;
