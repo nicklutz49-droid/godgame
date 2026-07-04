@@ -36,6 +36,7 @@
 #include "SaveFile.h"
 #include "Shader.h"
 #include "Sky.h"
+#include "Sound.h"
 #include "Terrain.h"
 #include "Tuning.h"
 #include "Villagers.h"
@@ -380,7 +381,8 @@ struct App {
   // --- the miracle book (M11): 1-4 select, M casts, HUD shows the page ---
   int selectedMiracle = 0;        // index into Miracle (0=food..3=fireball)
   Mesh rainStreaks;               // one falling sheet, drawn per active cloud
-  void drainWorldEvents();        // sim events -> effects/shake (M12: sound)
+  void drainWorldEvents();        // sim events -> effects/shake/sound
+  void updateAudio();             // listener + ambience beds (M12)
   float shake = 0.0f;      // temple-collapse screen shake (decays)
   float failFlash = 0.0f;  // red edge flash when a cast is refused
   glm::vec3 nudgeTarget{0.0f};
@@ -540,6 +542,7 @@ bool App::initGraphics() {
   gl.Enable(GL_MULTISAMPLE);
 
   SDL_ShowCursor(SDL_DISABLE);
+  snd::init();  // silent no-op on machines without audio
   return true;
 }
 
@@ -971,6 +974,10 @@ std::vector<std::string> App::buildMenuRows() const {
       rows.push_back("SAVE TO SLOT " + std::to_string(saveSlot));
       rows.push_back("LOAD SLOT " + std::to_string(saveSlot));
     }
+    rows.push_back("VOLUME: " +
+                   std::to_string(static_cast<int>(
+                       std::lround(snd::masterVolume() * 10.0f) * 10)) +
+                   "%");
     rows.push_back("MAIN MENU");
     rows.push_back("QUIT");
   }
@@ -1035,6 +1042,9 @@ void App::activateMenuRow(int row) {
       } else {
         SDL_Log("No save in %s", savePath().c_str());
       }
+    } else if (r.rfind("VOLUME", 0) == 0) {
+      float v = snd::masterVolume() + 0.1f;
+      snd::setMasterVolume(v > 1.001f ? 0.0f : v);  // click cycles around
     } else if (r == "MAIN MENU") {
       if (editor) toggleEditor();
       endState = 0;
@@ -1070,6 +1080,8 @@ void App::adjustMenuRow(int row, int dir) {
   } else if (shell == Shell::Pause &&
              (r.rfind("SAVE", 0) == 0 || r.rfind("LOAD", 0) == 0)) {
     saveSlot = (saveSlot - 1 + dir + 4) % 4 + 1;
+  } else if (r.rfind("VOLUME", 0) == 0) {
+    snd::setMasterVolume(snd::masterVolume() + 0.1f * static_cast<float>(dir));
   }
 }
 
@@ -1122,6 +1134,7 @@ void App::handleEvent(const SDL_Event& e) {
               std::floor((static_cast<float>(mouseY) - menuY0) / menuStep));
           if (row >= 0 && row < menuRows) {
             menuSel = row;
+            snd::play(snd::Sfx::UiSelect, 0.7f);
             activateMenuRow(row);
           }
         }
@@ -1139,22 +1152,27 @@ void App::handleEvent(const SDL_Event& e) {
           case SDLK_UP:
           case SDLK_w:
             menuSel = (menuSel - 1 + count) % count;
+            snd::play(snd::Sfx::UiMove, 0.6f);
             break;
           case SDLK_DOWN:
           case SDLK_s:
             menuSel = (menuSel + 1) % count;
+            snd::play(snd::Sfx::UiMove, 0.6f);
             break;
           case SDLK_LEFT:
           case SDLK_a:
             adjustMenuRow(menuSel, -1);
+            snd::play(snd::Sfx::UiMove, 0.6f, 0.9f);
             break;
           case SDLK_RIGHT:
           case SDLK_d:
             adjustMenuRow(menuSel, +1);
+            snd::play(snd::Sfx::UiMove, 0.6f, 1.1f);
             break;
           case SDLK_RETURN:
           case SDLK_KP_ENTER:
           case SDLK_SPACE:
+            snd::play(snd::Sfx::UiSelect, 0.7f);
             activateMenuRow(menuSel);
             break;
           default:
@@ -1195,7 +1213,9 @@ void App::handleEvent(const SDL_Event& e) {
           } else {
             editorClick();
           }
-        } else if (!hand.tryGrab(world) && hand.hasGround) {
+        } else if (hand.tryGrab(world)) {
+          snd::play(snd::Sfx::Place, 0.5f, 1.3f);  // a soft pluck
+        } else if (hand.hasGround) {
           panning = true;
           grabPoint = hand.groundPoint;
         }
@@ -1208,8 +1228,11 @@ void App::handleEvent(const SDL_Event& e) {
         sculpting = false;
         if (!editor && hand.mode == Hand::Mode::Carry) {
           hand.release(world);
+          bool gentle = hand.lastReleaseSpeed < tune::kPlaceSpeed;
+          snd::play(gentle ? snd::Sfx::Place : snd::Sfx::Whoosh,
+                    gentle ? 0.6f : 0.9f);
           SDL_Log("release speed %.1f (%s)", hand.lastReleaseSpeed,
-                  hand.lastReleaseSpeed < tune::kPlaceSpeed ? "place" : "throw");
+                  gentle ? "place" : "throw");
         }
         panning = false;
       } else if (e.button.button == SDL_BUTTON_RIGHT || e.button.button == SDL_BUTTON_MIDDLE) {
@@ -1389,6 +1412,7 @@ void App::handleEvent(const SDL_Event& e) {
                       world.gods[0].mana, world.gods[0].manaMax);
             } else {
               failFlash = 0.5f;
+              snd::play(snd::Sfx::UiDeny, 0.7f);
               if (!world.miracleUnlocked(kind, 0))
                 SDL_Log("cannot cast %s: build a %s first",
                         kMiracleNames[selectedMiracle],
@@ -1426,6 +1450,7 @@ void App::update(float dt) {
     world.handSpeed = 0.0f;
     world.update(dt);
     drainWorldEvents();
+    updateAudio();
     refreshVillageRings();
     clearFallenTempleRings();
     for (CastEffect& e : effects) e.age += dt;
@@ -1532,6 +1557,8 @@ void App::update(float dt) {
         effects.push_back(column);
         nudgeTarget = world.villages[v].center;
         nudgeTimer = 0.8f;
+        snd::playAt(snd::Sfx::Bell, world.villages[v].center, 1.0f,
+                    owner == 0 ? 1.0f : 0.8f);  // theirs tolls lower
         SDL_Log(owner == 0 ? "A village has joined your faith!"
                            : "A village has fallen to the rival god!");
       }
@@ -1554,6 +1581,7 @@ void App::update(float dt) {
           effects.push_back(dust);
         }
         shake = 0.9f;
+        snd::playAt(snd::Sfx::Rumble, at, 1.0f);
         if (g == 0) {
           SDL_Log("Your last village has fallen. The island forgets you...");
           if (endState == 0) endState = 2;
@@ -1578,12 +1606,55 @@ void App::update(float dt) {
   effects.erase(std::remove_if(effects.begin(), effects.end(),
                                [](const CastEffect& e) { return e.age > e.life(); }),
                 effects.end());
+  updateAudio();
+}
+
+// The ear rides the camera; the beds follow the hour and the neighborhood:
+// birds by day, crickets and fire by night, a shower overhead, the chant of
+// the nearest dancing totem. Every call is a no-op without a device.
+void App::updateAudio() {
+  glm::vec3 eye = cam.position();
+  snd::setListener(eye, cam.focus - eye);
+  float day = world.dayCycle.daylight();
+  float night = 1.0f - day;
+  snd::bed(snd::Bed::Wind, 0.45f);
+  snd::bed(snd::Bed::Birds, day * 0.7f);
+  snd::bed(snd::Bed::Crickets, night * 0.6f);
+  float fire = 0.0f;
+  float chant = 0.0f;
+  for (const Village& v : world.villages) {
+    if (!v.founded) continue;
+    float df = glm::distance(v.campfirePos(), cam.focus);
+    fire = std::max(fire, night / (1.0f + (df / 30.0f) * (df / 30.0f)));
+    if (v.centerIdx < 0) continue;
+    int dancers = 0;
+    for (const Villager& p : v.villagers)
+      if (p.alive && p.job == Job::Worshipper) ++dancers;
+    if (dancers == 0) continue;
+    float dc = glm::distance(v.buildings[v.centerIdx].pos, cam.focus);
+    chant = std::max(chant, std::min(1.0f, dancers / 6.0f) /
+                                (1.0f + (dc / 45.0f) * (dc / 45.0f)));
+  }
+  snd::bed(snd::Bed::Fire, fire);
+  snd::bed(snd::Bed::Chant, chant);
+  float rain = 0.0f;
+  for (const RainCloud& r : world.rains) {
+    float d = glm::distance(glm::vec2(r.pos.x, r.pos.z),
+                            glm::vec2(cam.focus.x, cam.focus.z));
+    float outside = std::max(0.0f, d - r.radius) / 22.0f;
+    rain = std::max(rain, 1.0f / (1.0f + outside * outside));
+  }
+  snd::bed(snd::Bed::RainBed, rain);
 }
 
 // Sim happenings become feel: every drained event turns into a pulse, a
-// bloom, or a blast - whoever cast it (the rival's casts flash too). M12
-// will grow a sound cue per kind right here.
+// bloom, a blast - and a sound at its spot (M12). The rival's acts flash
+// and ring exactly like the player's.
 void App::drainWorldEvents() {
+  int oneShots = 0;  // don't let a busy tick eat every mixer voice
+  auto cue = [&](snd::Sfx s, const glm::vec3& at, float gain, float pitch = 1.0f) {
+    if (++oneShots <= 12) snd::playAt(s, at, gain, pitch);
+  };
   for (const WorldEvent& ev : world.events) {
     switch (ev.kind) {
       case WorldEvent::Kind::MiracleCast: {
@@ -1595,6 +1666,11 @@ void App::drainWorldEvents() {
                                 ? glm::vec3(1.0f, 0.45f, 0.12f)
                                 : glm::vec3(0.98f, 0.82f, 0.38f);
         effects.push_back(pulse);
+        if (kind == static_cast<int>(Miracle::Fireball))
+          cue(snd::Sfx::Whoosh, ev.pos, 1.0f, 0.7f);
+        else
+          cue(snd::Sfx::Cast, ev.pos, 0.9f,
+              kind == static_cast<int>(Miracle::Rain) ? 0.85f : 1.0f);
         break;
       }
       case WorldEvent::Kind::ForestBloom: {
@@ -1602,6 +1678,7 @@ void App::drainWorldEvents() {
         column.kind = 1;
         column.color = glm::vec3(0.38f, 0.85f, 0.35f);
         effects.push_back(column);
+        cue(snd::Sfx::Bloom, ev.pos, 0.9f);
         break;
       }
       case WorldEvent::Kind::Explosion: {
@@ -1615,8 +1692,34 @@ void App::drainWorldEvents() {
           effects.push_back(dust);
         }
         shake = std::max(shake, 0.55f);
+        cue(snd::Sfx::Explosion, ev.pos, 1.0f);
         break;
       }
+      case WorldEvent::Kind::Thud:
+        cue(ev.magnitude > 14.0f ? snd::Sfx::ThudHard : snd::Sfx::ThudSoft,
+            ev.pos, std::min(1.0f, ev.magnitude / 18.0f));
+        break;
+      case WorldEvent::Kind::Splash:
+        cue(snd::Sfx::Splash, ev.pos, std::min(1.0f, ev.magnitude / 14.0f));
+        break;
+      case WorldEvent::Kind::Scream: {
+        float vary = ev.pos.x * 0.37f;
+        cue(snd::Sfx::Scream, ev.pos, 0.9f,
+            0.88f + 0.24f * (vary - std::floor(vary)));
+        break;
+      }
+      case WorldEvent::Kind::Chop:
+        cue(snd::Sfx::Chop, ev.pos, 0.8f);
+        break;
+      case WorldEvent::Kind::TreeFall:
+        cue(snd::Sfx::TreeFall, ev.pos, 1.0f);
+        break;
+      case WorldEvent::Kind::Clack:
+        cue(snd::Sfx::Clack, ev.pos, 0.9f);
+        break;
+      case WorldEvent::Kind::Complete:
+        cue(snd::Sfx::Complete, ev.pos, 0.9f);
+        break;
     }
   }
   world.events.clear();
@@ -2776,6 +2879,7 @@ int App::runScreenshot(const std::string& path, int frames, const std::string& v
 }
 
 void App::shutdown() {
+  snd::shutdown();
   if (ctx) SDL_GL_DeleteContext(ctx);
   if (window) SDL_DestroyWindow(window);
   SDL_Quit();
@@ -4630,6 +4734,71 @@ int runHeadless(std::uint32_t seed, int steps) {
       check(fair.ai[1].smites == 0, "FAIR never does");
       check(cruel.ai[1].rainCasts == 0, "rain stays locked without a dispenser");
     }
+  }
+
+  // [20] Sound (M12): the bakery is deterministic, the whole API is inert
+  // without a device (--headless never opens audio), and the sim's event
+  // seams fire so the app has something to score.
+  std::printf("[20] sound & the event seams\n");
+  {
+    std::uint64_t h1 = snd::bankChecksum();
+    snd::bake(true);  // force a full re-synthesis
+    std::uint64_t h2 = snd::bankChecksum();
+    check(h1 != 0 && h1 == h2, "the sample bakery is deterministic");
+    snd::play(snd::Sfx::Bell);
+    snd::playAt(snd::Sfx::Explosion, glm::vec3(0.0f));
+    snd::bed(snd::Bed::Wind, 1.0f);
+    snd::setListener(glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+    snd::setMasterVolume(0.5f);
+    check(true, "every call is a safe no-op without a device");
+
+    World w;
+    w.generate(seed);
+    w.events.clear();
+    villagerGrabbed(w, 0, 0);
+    bool scream = false;
+    for (const WorldEvent& ev : w.events)
+      scream |= ev.kind == WorldEvent::Kind::Scream;
+    check(scream, "a grabbed villager screams into the event seam");
+    w.events.clear();
+    w.villages[0].villagers[0].pos.y += 3.0f;
+    villagerReleased(w, 0, 0, glm::vec3(16.0f, 4.0f, 0.0f), false);
+    bool thud = false;
+    for (int i = 0; i < 240 && !thud; ++i) {
+      w.update(dt);
+      for (const WorldEvent& ev : w.events)
+        thud |= ev.kind == WorldEvent::Kind::Thud;
+      w.events.clear();  // drained, the way the app does
+    }
+    check(thud, "the landing thuds");
+
+    // Two scaffolds side by side: combining clacks.
+    glm::vec3 open = w.home().center;
+    for (float r = 16.0f; r < 60.0f; r += 4.0f) {
+      glm::vec3 cand = w.home().center + glm::vec3(r, 0.0f, 0.0f);
+      if (w.terrain.heightAt(cand.x, cand.z) > 1.0f) {
+        open = cand;
+        break;
+      }
+    }
+    Prop s;
+    s.type = PropType::Scaffold;
+    s.resource = 1.0f;
+    s.radius = 1.0f;
+    s.scale = 1.0f;
+    s.pos = glm::vec3(open.x, 0.0f, open.z);
+    s.pos.y = w.restHeight(s);
+    s.asleep = true;
+    int a = w.spawnProp(s);
+    s.pos.x += 1.2f;
+    s.pos.y = w.restHeight(s);
+    int b = w.spawnProp(s);
+    w.events.clear();
+    int merged = w.tryCombineScaffold(a);
+    bool clack = false;
+    for (const WorldEvent& ev : w.events)
+      clack |= ev.kind == WorldEvent::Kind::Clack;
+    check(merged == b && clack, "combining scaffolds clacks");
   }
 
   // [7] Determinism: same seed, same steps, identical checksums.

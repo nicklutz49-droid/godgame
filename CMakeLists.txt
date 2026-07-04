@@ -55,6 +55,7 @@ add_executable(godgame
   src/SaveFile.cpp
   src/Font.cpp
   src/Models.cpp
+  src/Sound.cpp
   src/bw/BWPack.cpp
   src/bw/BWLand.cpp
   src/bw/BWMesh.cpp

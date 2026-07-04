@@ -369,6 +369,8 @@ BuildingType Village::buildingForStack(int count, BuildingType civicChoice) {
 void Village::onBuildingComplete(World& world, int buildingIdx) {
   Building& b = buildings[buildingIdx];
   b.stage = 3;
+  world.events.push_back(
+      {WorldEvent::Kind::Complete, b.pos, static_cast<float>(b.tier), owner});
   switch (b.type) {
     case BuildingType::House:
     case BuildingType::LargeAbode:

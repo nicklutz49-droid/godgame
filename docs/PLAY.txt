@@ -13,7 +13,7 @@ STARTING
     EDITOR              sculpt your own island and save it as a map
     QUIT
   Arrows + Enter, or the mouse. Esc during play opens the pause menu
-  (resume / save / load / main menu / quit).
+  (resume / save / load / volume / main menu / quit).
 
 THE LOOP
   Villagers gather food and wood on their own. Drop a villager onto the

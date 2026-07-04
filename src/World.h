@@ -102,6 +102,13 @@ struct WorldEvent {
     MiracleCast,  // magnitude = miracle index
     Explosion,    // magnitude = blast radius
     ForestBloom,
+    Thud,      // prop/villager lands; magnitude = impact speed
+    Splash,    // something met the sea; magnitude = fall speed
+    Scream,    // a villager grabbed/hurled/flung (magnitude = how many)
+    Chop,      // an axe bit a trunk
+    TreeFall,  // the trunk came down
+    Clack,     // scaffold placed or combined
+    Complete,  // a building finished
   };
   Kind kind;
   glm::vec3 pos{0.0f};

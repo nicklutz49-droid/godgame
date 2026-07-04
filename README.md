@@ -10,7 +10,30 @@ screen is procedural placeholder art. There is no creature, by design.
 ![The temple](docs/temple.png)
 ![The island](docs/island.png)
 
-## Current slice: the miracle book
+## Current slice: the island finds its voice
+
+Sound, all of it synthesized at startup — no audio files, no new
+dependencies (design: [docs/plan-sound.md](docs/plan-sound.md)):
+
+- **The world sounds like itself** — thuds scale with the fall, the sea
+  splashes, axes bite and trunks come down, scaffolds clack, finished
+  buildings chime, grabbed villagers scream (flung ones too), casts
+  sparkle, explosions boom, conversions ring a bell (the rival's tolls
+  lower), collapsing temples rumble. Everything positional around the
+  camera ear.
+- **The hours have beds** — wind always, birdsong by day, crickets by
+  night, campfire crackle swelling as you drift near, a rain hiss under
+  every M11 shower, and the worship chant rising with the dancers: the
+  mana engine, audible.
+- **Silence is a feature** — the sim never touches the audio layer (it
+  speaks through the same `World::events` seam the visuals use);
+  `--headless` never opens a device; machines without audio log one line
+  and play on identically. The synth bank is deterministic and the suite
+  proves it (260 checks now).
+- Volume lives in the pause menu (`VOLUME: 80%`, arrows adjust). Music
+  stays reserved for the original-soundtrack overlay later.
+
+## Previous slice: the miracle book
 
 Food has company (design: [docs/plan-miracles.md](docs/plan-miracles.md)):
 

@@ -780,6 +780,7 @@ void World::explodeFireball(const Fireball& f) {
   }
   notifyDivineEvent(f.god, at, tune::kFearFireball, tune::kAweFireball);
   events.push_back({WorldEvent::Kind::Explosion, at, R, f.god});
+  events.push_back({WorldEvent::Kind::Scream, at, 2.0f, f.god});
 }
 
 float World::restHeight(const Prop& p) const {
@@ -961,15 +962,22 @@ void World::update(float dt) {
       }
     }
 
+    float fallSpeed = -p.vel.y;
     p.pos += p.vel * dt;
+    if (!inWater && fallSpeed > 2.5f &&
+        p.pos.y - p.radius * 0.5f < Terrain::WATER_LEVEL)
+      events.push_back({WorldEvent::Kind::Splash, p.pos, fallSpeed, -1});
 
     integrateTumble(p.rot, p.angVel, dt);
 
     // Terrain collision (single sphere) - shared with thrown villagers.
     float restitution = p.type == PropType::Rock ? 0.32f : 0.10f;
     bool onGround = false;
-    collideSphereTerrain(p.pos, p.vel, p.angVel, p.radius, 0.55f, terrain,
-                         restitution, 0.72f, 1.2f, onGround);
+    float impact =
+        collideSphereTerrain(p.pos, p.vel, p.angVel, p.radius, 0.55f, terrain,
+                             restitution, 0.72f, 1.2f, onGround);
+    if (onGround && impact > 5.0f)
+      events.push_back({WorldEvent::Kind::Thud, p.pos, impact, -1});
 
     // Fall asleep once settled (on land or afloat).
     bool settled = glm::length(p.vel) < 0.45f && glm::length(p.angVel) < 0.5f &&
@@ -1064,6 +1072,7 @@ int World::tryCombineScaffold(int scaffoldIdx) {
                           Terrain::WATER_LEVEL + target.radius * 0.3f);
   held.alive = false;
   held.held = false;
+  events.push_back({WorldEvent::Kind::Clack, target.pos, target.resource, -1});
   return best;
 }
 
@@ -1144,6 +1153,7 @@ bool World::tryPlaceScaffold(int scaffoldIdx, BuildingType civicChoice, int god)
     c.level = std::min(3, c.level + 1);
     s.alive = false;
     s.held = false;
+    events.push_back({WorldEvent::Kind::Clack, c.pos, 2.0f, god});
     return true;
   }
 
@@ -1159,6 +1169,7 @@ bool World::tryPlaceScaffold(int scaffoldIdx, BuildingType civicChoice, int god)
   village.buildings.push_back(b);
   s.alive = false;
   s.held = false;
+  events.push_back({WorldEvent::Kind::Clack, b.pos, 2.0f, god});
   return true;
 }
 

@@ -13,9 +13,9 @@ AI god (docs/plan-rival.md), the map editor & .gmap files
 collapse (docs/plan-shell.md), the balance & feel pass (difficulty profiles,
 pacing sweeps), light & shadow (docs/plan-shading.md), the original-asset
 overlay phases A+B (docs/plan-assets.md), the miracle book — rain/forest/
-fireball (docs/plan-miracles.md). Master arc complete through M8:
-docs/plan-game.md; what remains is docs/plan-next.md (story mode,
-extensions) and plan-assets phases §5/C.
+fireball (docs/plan-miracles.md), procedural sound (docs/plan-sound.md).
+Master arc complete through M8: docs/plan-game.md; what remains is
+docs/plan-next.md (story mode, extensions) and plan-assets phases §5/C.
 
 Multi-village invariants: `World::villages[0]` is the player's home village;
 indices are stable for the session. Prop `claimedBy`/`carrier` store packed
@@ -104,8 +104,9 @@ determinism; `--match` runs full wars), map round-trips, game-save
 round-trips (incl. lockstep continue-equality), the temple collapse, a 3-day
 economy/schedule soak, the B&W asset loaders on synthetic fixtures, the
 miracle book (gates, rain growth, forest rooting, fireball flinging, live
-weather in saves, FAIR-never/CRUEL-does smite policy), and a double-run
-determinism checksum. Keep it green; extend it with every system.
+weather in saves, FAIR-never/CRUEL-does smite policy), the sound bakery +
+event seams (deviceless no-op safety), and a double-run determinism
+checksum. Keep it green; extend it with every system.
 
 Cross-platform (Linux dev, Windows target). CMake falls back to FetchContent
 for SDL2/glm when system packages are missing — don't add hard system deps.
@@ -129,6 +130,15 @@ for SDL2/glm when system packages are missing — don't add hard system deps.
 - Sim code (Terrain/World/Village/Villagers/Hand/DayCycle/Physics) never
   touches GL — `--headless` must keep working without a window. Rendering
   lives in main.cpp, Water, Sky.
+- Sound (M12, src/Sound.*) is render-side the same way: the sim NEVER calls
+  `snd::` — it appends to `World::events` (Thud/Splash/Scream/Chop/
+  TreeFall/Clack/Complete + the M11 cast kinds) and the app scores them in
+  `drainWorldEvents`. Every sample is synthesized in `snd::bake()`
+  (deterministic; `bankChecksum()` is tested) — no audio files ever.
+  `--headless` never opens a device and the whole snd:: API must stay a
+  safe no-op without one (test [20] calls it deviceless). Ambience beds
+  (wind/birds/crickets/fire/rain/chant) get per-frame targets from
+  `App::updateAudio`; the pause menu owns VOLUME.
 - World generation must stay deterministic per seed and identical across
   platforms: use `noise::*` (incl. `noise::XorShift`), never std::rand,
   std distributions, or time. Village founding avoids libm trig (hardcoded

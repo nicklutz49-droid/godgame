@@ -555,6 +555,7 @@ void workCycleComplete(World& w, Village& vil, int vi, int i) {
       // One chop lands.
       p.resource -= 1.0f;
       ++v.workCount;
+      w.events.push_back({WorldEvent::Kind::Chop, p.pos, 1.0f, -1});
       // The trunk shudders with each strike.
       p.rot = glm::angleAxis(p.baseYaw + ((v.workCount & 1) ? 0.035f : -0.035f),
                              glm::vec3(0, 1, 0));
@@ -681,6 +682,8 @@ void workCycleComplete(World& w, Village& vil, int vi, int i) {
 // Every hard contact funnels through this one function.
 void applyLanding(World& w, Village& vil, int vi, int i, float impact) {
   Villager& v = vil.villagers[i];
+  if (impact > 4.0f)
+    w.events.push_back({WorldEvent::Kind::Thud, v.pos, impact, -1});
   if (!tune::kVillagersInvulnerable && impact > tune::kLethalImpactSpeed) {
     villagerKill(w, vil, vi, i, DeathCause::Impact);
     return;
@@ -1330,6 +1333,7 @@ void villagerGrabbed(World& world, int villageIdx, int idx, int god) {
   v.fear = 1.0f;
   v.pendingAssign = false;
   world.notifyDivineEvent(god, v.pos, 0.55f, tune::kAweGrab);
+  world.events.push_back({WorldEvent::Kind::Scream, v.pos, 1.0f, god});
 }
 
 void villagerReleased(World& world, int villageIdx, int idx,
@@ -1352,6 +1356,7 @@ void villagerReleased(World& world, int villageIdx, int idx,
         glm::normalize(vel + glm::vec3(0, 0.001f, 0)), glm::vec3(0, 1, 0));
     v.angVel = spinAxis * std::min(speed * 0.12f, 5.0f);
     world.notifyDivineEvent(god, v.pos, 0.8f, tune::kAweThrow);
+    world.events.push_back({WorldEvent::Kind::Scream, v.pos, 1.0f, god});
   }
 }
 
@@ -1398,6 +1403,8 @@ GrabTarget pickTarget(const World& world, const glm::vec3& origin,
 }
 
 void convertFelledTree(World& world, int propIdx) {
+  world.events.push_back(
+      {WorldEvent::Kind::TreeFall, world.props[propIdx].pos, 1.0f, -1});
   // Copy what we need first: spawnProp may reallocate the props vector.
   glm::vec3 treePos = world.props[propIdx].pos;
   glm::quat treeRot = world.props[propIdx].rot;
