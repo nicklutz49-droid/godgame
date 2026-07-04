@@ -62,7 +62,15 @@ outputs untouched on malformed data, headless-testable with tiny synthetic
 fixtures (hand-built 2-cell LND / 1-triangle L3D buffers committed as C
 arrays in the TEST, never real game bytes).
 
-## 3. Phase A — terrain (the biggest visual win)
+## 3. Phase A — terrain (the biggest visual win) — SHIPPED (M10)
+
+> Landed as `src/bw/BWLand` + `World::generateOnCurrentTerrain` +
+> `App::rebuildWorldOnLand`. Entry points: `--land N`, the title-menu map
+> picker (choices 5..9 = LAND 1..5), and `L` in the editor. The waterline
+> self-calibrates from the mean coastline-cell altitude instead of a hand
+> offset; `tune::kBwLandHeightScale` (0.22) awaits real-install
+> calibration. Split-diagonal sampling and the water clamp are covered by
+> headless test [18] on synthetic fixtures.
 
 1. `BWLand::load(path)` → `{ gridN, heights[], cellMaterial[], textures }`.
 2. B&W landscapes are island heightfields around ~160x160 cells of ~10 ft
@@ -86,7 +94,16 @@ arrays in the TEST, never real game bytes).
 Tests: synthetic LND fixture round-trip; resample conservation (min/max/
 mean within tolerance); `--bw` absent → procedural fallback intact.
 
-## 4. Phase B — meshes (buildings, trees, villagers)
+## 4. Phase B — meshes (buildings, trees, villagers) — SHIPPED (M10, vertex-color mode)
+
+> Landed as `src/bw/BWPack` + `BWMesh` (DXT1/DXT3 decode, texel-baked
+> vertex colors, CW→CCW rewind, no V flip needed for a CPU bake of
+> top-down DDS rows) + the `BWMeshMap.h` slot table (Celtic set) +
+> `App::uploadWorldMeshes` (F8 toggles; swaps at upload only). Villagers
+> stayed procedural by decision (§6 C1 is its own slice). Textured mode
+> still needs §5. `tune::kBwMeshScale` (0.1 = the landscape's own
+> unit-to-meter ratio) awaits real-install calibration via `--bw-report`
+> bounding boxes.
 
 1. `BWPack` opens `AllMeshes.g3d`, indexes L3D blocks by mesh id.
 2. `BWMesh::load(id)` → positions/normals/uvs + submesh texture ids. Two
@@ -209,10 +226,14 @@ map (65536 B) → optional tail bytes** (preserve/ignore). Validate
 - **Texture block**: `{u32 size, u32 id, u32 type, u32 ddsSize}` + a DDS
   file minus its 4-byte magic (124-byte DDS_HEADER + texels). DXT1/DXT3
   (type 1/2). `id` is the key L3D materials reference via `skinID`.
+  DDS_HEADER offsets that matter: height @8, width @12, DDS_PIXELFORMAT
+  @72, its fourCC @80, texels @124 (verified the hard way in test [18]).
 - **MESHES**: `"MKJC"`, `u32 meshCount`, meshCount × `u32 offset` (relative
-  to the MESHES body), L3D blobs packed tight. **Index = fixed MeshId** —
+  to the MESHES body; size each mesh by the gap to the next offset, last one
+  runs to the block end), L3D blobs packed tight. **Index = fixed MeshId** —
   the vanilla 626-entry enum is openblack's `src/3D/AllMeshes.h`
-  (0=Dummy … 625=U_WashingLineTibetan); copy that enum into `BWMeshMap.h`.
+  (0=Dummy … 625=U_WashingLineTibetan); `BWMeshMap.h` carries just the
+  bound subset (names as comments), not the whole enum.
 - **L3D blob**: 76 B header: `"L3D0"`, flags, size, submeshCount,
   submeshOffsetsOffset, zeroed bbox, 0xFFFFFFFF, skinCount,
   skinOffsetsOffset, extraDataCount/Offset, footprintDataOffset. Offsets
@@ -246,8 +267,13 @@ map (65536 B) → optional tail bytes** (preserve/ignore). Validate
 
 ## 8. Delivery order & acceptance
 
-1. §2 BWPack + §3 BWLand (behind `--bw`); screenshot: our villages on Land1.
-2. §4 vertex-color meshes for trees + the building roster; A/B screenshot.
+1. ~~§2 BWPack + §3 BWLand (behind `--bw`)~~ SHIPPED (M10).
+2. ~~§4 vertex-color meshes for trees + the building roster~~ SHIPPED (M10).
+   Both verified here only on synthetic fixtures + a procedural
+   pixel-identity diff; the FIRST RUN against a real install still needs
+   doing — `--bw <dir> --bw-report`, then eyeball a `--land 1` boot and
+   F8 A/B, then calibrate kBwMeshScale/kBwLandHeightScale and rebind any
+   ugly slots in BWMeshMap.h.
 3. §5 texture path (guarded by a procedural-island pixel-diff), then
    textured terrain + meshes.
 4. §6 C1 villager parts; §8 audio swap-in behind `Sound::play` ids

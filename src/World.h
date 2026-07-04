@@ -98,6 +98,10 @@ class World {
   // godCount 1 = the peaceful sandbox; 2 = a skirmish world (the rival god
   // founds its own home village and temple on the site farthest from yours).
   void generate(std::uint32_t seed, int godCount = 1);
+  // Same founding (sites, temples, props, villagers), but on whatever the
+  // terrain already holds - the imported-heightfield path (M10 --land).
+  // Heights are DATA: same heights + same seed = the same world.
+  void generateOnCurrentTerrain(std::uint32_t seed, int godCount = 1);
   void update(float dt);
 
   // --- editor verbs (M6): the author's hand. Sim-side, deterministic,

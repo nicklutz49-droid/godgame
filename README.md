@@ -10,7 +10,37 @@ screen is procedural placeholder art. There is no creature, by design.
 ![The temple](docs/temple.png)
 ![The island](docs/island.png)
 
-## Current slice: light & shadow
+## Current slice: the original-asset overlay
+
+The game can now wear a personally owned Black & White (2001) installation
+at runtime (design: [docs/plan-assets.md](docs/plan-assets.md)):
+
+```sh
+godgame --bw ~/BlackWhite --bw-report   # validate the install, print an inventory
+godgame --bw ~/BlackWhite --land 1      # play on an original island
+godgame --bw ~/BlackWhite               # menu: SKIRMISH - MAP: LAND 1..5
+```
+
+- **Original islands** — `Data/Landscape/Land1..5.lnd` parse into the real
+  heightfields (split-diagonal exact, waterline self-calibrated from the
+  coastline cells) and resample onto our terrain; the standard founding
+  scan then places villages on the real ground. Heights are data, so
+  determinism, maps, and saves are untouched. In the editor, `L` pulls a
+  land in as sculpting clay.
+- **Original models** — `Data/AllMeshes.g3d` dresses the world: the Celtic
+  building set, oaks and cedars and conifers, limestone rocks, scaffolds,
+  campfires, grain piles. L3D meshes bake their DXT textures into
+  per-vertex color at load, so they ride the existing one-shader pipeline
+  (tints, ghosts, fog, shadows) with zero renderer changes. `F8` flips
+  between originals and placeholders live.
+- **Nothing ships** — assets are read from your own install into process
+  memory; nothing is extracted, converted, or committed. Without `--bw`
+  (or with a slot the pack can't fill) every placeholder stays, pixel-
+  identical to the previous slice. The self-test suite proves the loaders
+  on synthetic fixtures built byte-by-byte in the test - it never needs
+  the game files.
+
+## Previous slice: light & shadow
 
 The island learned about the sun (design:
 [docs/plan-shading.md](docs/plan-shading.md)):
@@ -297,10 +327,11 @@ hard landings stun instead. The mortality seams are in place for later.
 | `M` | Food miracle at the cursor (30 mana, inside influence) |
 | `T` | Advance time of day |
 | `R` | Generate a new island |
-| `Tab` | **Map editor** (frozen time; `1-9` tools, `[` `]` brush, `G` owner, `V` size, `N` blank island, `F5`/`F9`/`F6` map slots) |
+| `Tab` | **Map editor** (frozen time; `1-9` tools, `[` `]` brush, `G` owner, `V` size, `N` blank island, `L` original island as clay, `F5`/`F9`/`F6` map slots) |
 | `F5` / `F9` / `F6` | Quick-save / quick-load / cycle `saves/slot<N>.sav` (in play) |
 | `F2` | Wireframe |
 | `F7` | Toggle sun shadows (for weak machines) |
+| `F8` | Toggle original B&W meshes ↔ placeholders (with `--bw`) |
 | `Esc` | Pause menu (resume, save, load, main menu, quit) |
 
 Debug/tuning: `F3` tint villagers by AI state, `F4` sim speed ×1/4/16,
@@ -353,6 +384,9 @@ godgame --headless [steps]    no window: world-gen, physics, village economy,
                               and determinism self-tests
 godgame --match [days]        no window: AI-vs-AI skirmish, day-by-day war report
 godgame --screenshot out.bmp [frames] [far|close|village|dawn|night|temple|rival|editor|menu|roster]
+godgame --bw <dir>            overlay original assets from your own B&W install
+godgame --bw <dir> --land 1   play on an original island (1..5)
+godgame --bw <dir> --bw-report  no window: validate the install, print an inventory
 ```
 
 ## Roadmap

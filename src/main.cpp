@@ -10,6 +10,9 @@
 //   godgame --headless [steps]       no window; generate + simulate + self-test
 //   godgame --match [days]           no window; AI-vs-AI skirmish, day-by-day report
 //   godgame --screenshot out.bmp [frames] [far|close|village|night|temple|rival|roster]
+//   godgame --bw <dir>               overlay original B&W assets from your install
+//   godgame --bw <dir> --land 1      play on an original island (1..5)
+//   godgame --bw <dir> --bw-report   validate the install and print an inventory
 
 #include <SDL.h>
 #include <glm/glm.hpp>
@@ -38,6 +41,7 @@
 #include "Villagers.h"
 #include "Water.h"
 #include "World.h"
+#include "bw/BWAssets.h"
 #include "gl.h"
 
 namespace {
@@ -410,6 +414,15 @@ struct App {
   std::string newestSavePath() const;
   std::uint32_t nextSeed() { return seed * 1664525u + 1013904223u; }
 
+  // --- original assets (M10): a runtime overlay from the owner's install.
+  // Swaps happen at Mesh::upload only; draw paths and the sim never know. ---
+  bw::Assets bwAssets;
+  std::string bwDir;   // --bw <dir>
+  bool bwOn = false;   // F8 toggles between placeholders and the overlay
+  int editorLand = 0;  // last land pulled in as editor clay (L cycles 1..5)
+  void uploadWorldMeshes();
+  bool rebuildWorldOnLand(int land, std::uint32_t newSeed);
+
   // --- the map editor (M6): frozen-time authoring, Tab toggles ---
   bool editor = false;
   int editorTool = 0;               // index into kEditorToolNames
@@ -559,29 +572,18 @@ void App::initScene() {
   sky.init();
   water.init();
 
-  for (int v = 0; v < 3; ++v) {
-    treeMeshes[v].upload(buildTreeMeshData(v));
-    rockMeshes[v].upload(buildRockMeshData(v));
-  }
   handOpen.upload(buildHandMeshData(0.0f));
   handClosed.upload(buildHandMeshData(1.25f));
   shadowDisc.upload(buildShadowDiscData());
   seabed.upload(buildSeabedData());
 
-  logMesh.upload(models::logProp());
-  foodMesh.upload(models::foodBundleProp());
-  stumpMesh.upload(models::stumpProp());
   for (int v = 0; v < 3; ++v) villagerHeads[v].upload(models::villagerHead(v));
   villagerTorso.upload(models::villagerTorso());
   villagerArm.upload(models::villagerArm());
   villagerLeg.upload(models::villagerLeg());
-  for (int s = 0; s < 4; ++s) houseStages[s].upload(models::houseStage(s));
+  for (int s = 0; s < 3; ++s) houseStages[s].upload(models::houseStage(s));
   houseWindows.upload(models::houseWindows());
-  totemMesh.upload(models::totem());
   storagePadMesh.upload(models::storagePad());
-  woodPileMesh.upload(models::woodPile());
-  foodPileMesh.upload(models::foodPile());
-  campfireMesh.upload(models::campfire());
   flameMesh.upload(models::campfireFlame());
   fieldSlabMesh.upload(models::fieldSlab(8.0f, 5.0f));
   cropMesh.upload(models::cropCone());
@@ -593,19 +595,79 @@ void App::initScene() {
   bubbleHungerMesh.upload(models::bubbleHunger());
   bubbleSleepMesh.upload(models::bubbleSleep());
   bubbleFearMesh.upload(models::bubbleFear());
-  templeMesh.upload(models::temple());
   templeCrystalMesh.upload(models::templeCrystal());
-  largeAbodeMesh.upload(models::largeAbode());
-  workshopMesh.upload(models::workshop());
-  storeMesh.upload(models::store());
-  crecheMesh.upload(models::creche());
-  graveyardMesh.upload(models::graveyard());
-  dispenserMesh.upload(models::dispenser());
-  wonderMesh.upload(models::wonder());
-  scaffoldMesh.upload(models::scaffoldProp());
   for (int v = 0; v < 3; ++v) bodyMeshes[v].upload(models::bodyProp(v));
 
+  if (!bwDir.empty() && bwAssets.init(bwDir)) {
+    bwOn = true;
+    SDL_Log("B&W overlay active: %s (F8 toggles placeholders)", bwDir.c_str());
+  }
+  uploadWorldMeshes();
+
   rebuildWorld(seed);
+}
+
+// Every mesh with a B&W wardrobe entry goes through here so F8 can re-dress
+// the world both ways. Swapping at upload keeps every draw path unchanged;
+// a slot whose original is missing or unparseable simply stays procedural.
+void App::uploadWorldMeshes() {
+  auto pick = [&](Mesh& m, bw::Slot slot, MeshData proc) {
+    if (bwOn) {
+      if (const bw::BakedMesh* b = bwAssets.mesh(slot)) {
+        m.upload(b->data);
+        return;
+      }
+    }
+    m.upload(proc);
+  };
+  auto slotAt = [](bw::Slot base, int offset) {
+    return static_cast<bw::Slot>(static_cast<int>(base) + offset);
+  };
+  for (int v = 0; v < 3; ++v) {
+    pick(treeMeshes[v], slotAt(bw::Slot::Tree0, v), buildTreeMeshData(v));
+    pick(rockMeshes[v], slotAt(bw::Slot::Rock0, v), buildRockMeshData(v));
+  }
+  pick(houseStages[3], bw::Slot::House, models::houseStage(3));
+  pick(largeAbodeMesh, bw::Slot::LargeAbode, models::largeAbode());
+  pick(workshopMesh, bw::Slot::Workshop, models::workshop());
+  pick(storeMesh, bw::Slot::Store, models::store());
+  pick(crecheMesh, bw::Slot::Creche, models::creche());
+  pick(graveyardMesh, bw::Slot::Graveyard, models::graveyard());
+  pick(dispenserMesh, bw::Slot::Dispenser, models::dispenser());
+  pick(wonderMesh, bw::Slot::Wonder, models::wonder());
+  pick(totemMesh, bw::Slot::Totem, models::totem());
+  pick(templeMesh, bw::Slot::Temple, models::temple());
+  pick(scaffoldMesh, bw::Slot::Scaffold, models::scaffoldProp());
+  pick(campfireMesh, bw::Slot::Campfire, models::campfire());
+  pick(logMesh, bw::Slot::Log, models::logProp());
+  pick(foodMesh, bw::Slot::FoodBundle, models::foodBundleProp());
+  pick(stumpMesh, bw::Slot::Stump, models::stumpProp());
+  pick(woodPileMesh, bw::Slot::WoodPile, models::woodPile());
+  pick(foodPileMesh, bw::Slot::FoodPile, models::foodPile());
+}
+
+// Boot the world onto an original island: resampled heights become the
+// terrain (DATA, not code - determinism holds), then the standard founding
+// scan places our villages on the real ground.
+bool App::rebuildWorldOnLand(int land, std::uint32_t newSeed) {
+  std::vector<float> h;
+  if (!bwAssets.landHeights(land, h, Terrain::GRID, Terrain::SIZE,
+                            Terrain::SEABED))
+    return false;
+  seed = newSeed;
+  if (!world.terrain.setHeights(h, seed)) return false;
+  world.generateOnCurrentTerrain(seed, rivalEnabled ? 2 : 1);
+  if (world.villages.empty()) {
+    // Imported ground with no habitable site - not playable. Restore a
+    // coherent procedural world before reporting failure.
+    SDL_Log("Land %d has no habitable ground at this scale", land);
+    rebuildWorld(seed);
+    return false;
+  }
+  mapSnapshot.clear();
+  onWorldRebuilt();
+  SDL_Log("Land %d risen from the archive (seed %u)", land, seed);
+  return true;
 }
 
 // The finished look of each buildable type (ghost previews reuse this).
@@ -871,7 +933,10 @@ std::vector<std::string> App::buildMenuRows() const {
     if (!newestSavePath().empty()) rows.push_back("CONTINUE");
     rows.push_back(menuMapChoice == 0
                        ? "SKIRMISH - MAP: RANDOM"
-                       : "SKIRMISH - MAP: SLOT " + std::to_string(menuMapChoice));
+                       : (menuMapChoice <= 4
+                              ? "SKIRMISH - MAP: SLOT " + std::to_string(menuMapChoice)
+                              : "SKIRMISH - MAP: LAND " +
+                                    std::to_string(menuMapChoice - 4)));
     rows.push_back(std::string("DIFFICULTY: ") + tune::kAiProfileNames[difficulty]);
     rows.push_back("SANDBOX");
     rows.push_back("EDITOR");
@@ -903,9 +968,14 @@ void App::activateMenuRow(int row) {
       rivalEnabled = true;
       if (menuMapChoice == 0) {
         rebuildWorld(nextSeed());
-      } else if (!loadMapFromFile("maps/slot" + std::to_string(menuMapChoice) +
-                                  ".gmap")) {
-        SDL_Log("No map in slot %d", menuMapChoice);
+      } else if (menuMapChoice <= 4) {
+        if (!loadMapFromFile("maps/slot" + std::to_string(menuMapChoice) +
+                             ".gmap")) {
+          SDL_Log("No map in slot %d", menuMapChoice);
+          return;
+        }
+      } else if (!rebuildWorldOnLand(menuMapChoice - 4, nextSeed())) {
+        SDL_Log("Land %d is not there", menuMapChoice - 4);
         return;
       }
       world.ai[1].profile = difficulty;
@@ -959,14 +1029,19 @@ void App::adjustMenuRow(int row, int dir) {
   if (shell == Shell::Title && r.rfind("DIFFICULTY", 0) == 0) {
     difficulty = (difficulty + 3 + dir) % 3;
   } else if (shell == Shell::Title && r.rfind("SKIRMISH", 0) == 0) {
-    // Cycle: random, then only the map slots that exist.
-    for (int step = 0; step < 5; ++step) {
-      menuMapChoice = (menuMapChoice + dir + 5) % 5;
+    // Cycle: random, the map slots that exist, then (with --bw) the
+    // original islands that exist. Choices 5..9 are LAND 1..5.
+    for (int step = 0; step < 10; ++step) {
+      menuMapChoice = (menuMapChoice + dir + 10) % 10;
       if (menuMapChoice == 0) break;
-      std::error_code ec;
-      if (std::filesystem::exists(
-              "maps/slot" + std::to_string(menuMapChoice) + ".gmap", ec))
+      if (menuMapChoice <= 4) {
+        std::error_code ec;
+        if (std::filesystem::exists(
+                "maps/slot" + std::to_string(menuMapChoice) + ".gmap", ec))
+          break;
+      } else if (bwAssets.available() && bwAssets.hasLand(menuMapChoice - 4)) {
         break;
+      }
     }
   } else if (shell == Shell::Pause &&
              (r.rfind("SAVE", 0) == 0 || r.rfind("LOAD", 0) == 0)) {
@@ -1156,6 +1231,13 @@ void App::handleEvent(const SDL_Event& e) {
           shadowsOn = !shadowsOn;
           SDL_Log("shadows %s", shadowsOn ? "on" : "off");
           break;
+        case SDLK_F8:
+          if (bwAssets.available()) {
+            bwOn = !bwOn;
+            uploadWorldMeshes();
+            SDL_Log("meshes: %s", bwOn ? "original B&W" : "placeholders");
+          }
+          break;
         case SDLK_1:
         case SDLK_2:
         case SDLK_3:
@@ -1248,7 +1330,26 @@ void App::handleEvent(const SDL_Event& e) {
           }
           break;
         case SDLK_l:
-          if (!editor && !world.villages.empty()) {
+          if (editor && bwAssets.available()) {
+            // Pull an original island in as sculpting clay: a fresh blank
+            // world wearing the land's heights. Saving writes an ordinary
+            // .gmap (which then carries asset-derived ground - keep it local).
+            for (int step = 1; step <= 5; ++step) {
+              int cand = (editorLand + step - 1) % 5 + 1;
+              std::vector<float> h;
+              if (!bwAssets.landHeights(cand, h, Terrain::GRID, Terrain::SIZE,
+                                        Terrain::SEABED))
+                continue;
+              editorLand = cand;
+              seed = seed * 1664525u + 1013904223u;
+              world.buildBlank(seed);
+              world.terrain.setHeights(h, seed);
+              mapfile::save(world, mapSnapshot);
+              onWorldRebuilt();
+              SDL_Log("Land %d on the bench. Sculpt away.", editorLand);
+              break;
+            }
+          } else if (!editor && !world.villages.empty()) {
             world.home().wood += 10;
             world.home().food += 10;
           }
@@ -3822,6 +3923,280 @@ int runHeadless(std::uint32_t seed, int steps) {
     check(noonActive >= 0.6f, "village is active at noon");
   }
 
+  // [18] The original-asset loaders, proven on synthetic fixtures built here
+  // byte by byte - the suite must never require the real game
+  // (docs/plan-assets.md §0). Layouts follow §7 exactly.
+  std::printf("[18] b&w asset loaders (synthetic)\n");
+  {
+    auto push16 = [](std::vector<std::uint8_t>& v, std::uint16_t x) {
+      v.push_back(static_cast<std::uint8_t>(x & 0xFF));
+      v.push_back(static_cast<std::uint8_t>(x >> 8));
+    };
+    auto push32 = [](std::vector<std::uint8_t>& v, std::uint32_t x) {
+      v.push_back(static_cast<std::uint8_t>(x & 0xFF));
+      v.push_back(static_cast<std::uint8_t>((x >> 8) & 0xFF));
+      v.push_back(static_cast<std::uint8_t>((x >> 16) & 0xFF));
+      v.push_back(static_cast<std::uint8_t>(x >> 24));
+    };
+    auto pushf = [&](std::vector<std::uint8_t>& v, float f) {
+      std::uint32_t x;
+      std::memcpy(&x, &f, sizeof x);
+      push32(v, x);
+    };
+    auto addBlock = [&](std::vector<std::uint8_t>& pack, const char* name,
+                        const std::vector<std::uint8_t>& body) {
+      char n[32] = {};
+      std::snprintf(n, sizeof n, "%s", name);
+      pack.insert(pack.end(), n, n + 32);
+      push32(pack, static_cast<std::uint32_t>(body.size()));
+      pack.insert(pack.end(), body.begin(), body.end());
+    };
+
+    // -- the pack container --
+    {
+      std::vector<std::uint8_t> bytes = {'L', 'i', 'O', 'n', 'H', 'e', 'A', 'd'};
+      addBlock(bytes, "ALPHA", {1, 2, 3});
+      addBlock(bytes, "BETA", {9});
+      bw::Pack pack;
+      check(pack.parse(bytes), "pack: parses");
+      std::uint32_t sz = 0;
+      const std::uint8_t* a = pack.block("ALPHA", &sz);
+      check(a && sz == 3 && a[2] == 3, "pack: block by name");
+      check(pack.block("GAMMA", &sz) == nullptr, "pack: missing block is null");
+      bw::Pack broken;
+      check(!broken.parse({bytes.begin(), bytes.end() - 2}),
+            "pack: truncated body refused");
+    }
+
+    // -- the landscape: nb x nb stored blocks at (firstBx, firstBz) --
+    auto buildLand = [&](int firstBx, int firstBz, int nb, auto altitudeOf,
+                         auto propsOf) {
+      std::vector<std::uint8_t> f;
+      push32(f, static_cast<std::uint32_t>(nb * nb + 1));  // block 0 = open sea
+      std::vector<std::uint8_t> lut(1024, 0);
+      int next = 1;
+      for (int bx = firstBx; bx < firstBx + nb; ++bx)
+        for (int bz = firstBz; bz < firstBz + nb; ++bz)
+          lut[bx * 32 + bz] = static_cast<std::uint8_t>(next++);
+      f.insert(f.end(), lut.begin(), lut.end());
+      push32(f, 1);        // materialCount
+      push32(f, 1);        // countryCount
+      push32(f, 2520);     // blockSize
+      push32(f, 0x20002);  // materialSize
+      push32(f, 3076);     // countrySize
+      push32(f, 1);        // lowResolutionCount
+      for (int i = 0; i < 4; ++i) push32(f, 0);  // low-res ids
+      push32(f, 4 + 8);                          // size INCLUDES itself
+      f.insert(f.end(), 8, 0);                   // its texels
+      for (int bx = firstBx; bx < firstBx + nb; ++bx)
+        for (int bz = firstBz; bz < firstBz + nb; ++bz) {
+          std::size_t start = f.size();
+          for (int cx = 0; cx < 17; ++cx)
+            for (int cz = 0; cz < 17; ++cz) {
+              int gx = bx * 16 + std::min(cx, 15), gz = bz * 16 + std::min(cz, 15);
+              f.push_back(100);                     // r
+              f.push_back(100);                     // g
+              f.push_back(100);                     // b
+              f.push_back(0);                       // luminosity
+              f.push_back(altitudeOf(gx, gz));      // altitude
+              f.push_back(0);                       // saveColor
+              f.push_back(propsOf(gx, gz));         // properties
+              f.push_back(0);                       // sound flags
+            }
+          f.insert(f.end(), start + 2520 - f.size(), 0);  // runtime fields
+        }
+      f.insert(f.end(), 3076 + 0x20002 + 2 * 65536, 0);  // country/material/noise/bump
+      return f;
+    };
+    {
+      // One block at (1,1): an x-ramp with a flagged sea row, a coastline
+      // row, and one spiked split cell.
+      auto altA = [](int gx, int gz) -> std::uint8_t {
+        int cx = gx - 16, cz = gz - 16;
+        if (cz == 0) return 200;            // sea faked by flags, high ground
+        if (cx == 2 && cz == 2) return 40;  // the spike on the split cell
+        return static_cast<std::uint8_t>(cx * 4);
+      };
+      auto propsA = [](int gx, int gz) -> std::uint8_t {
+        int cx = gx - 16, cz = gz - 16;
+        std::uint8_t p = 1;              // country 1
+        if (cz == 0) p |= 0x50;          // hasWater | fullWater
+        if (cz == 1) p |= 0x20;          // coastline
+        if (cx == 2 && cz == 2) p |= 0x80;  // split diagonal
+        return p;
+      };
+      std::vector<std::uint8_t> lnd = buildLand(1, 1, 1, altA, propsA);
+      bw::Land land;
+      check(land.parse(lnd.data(), lnd.size()), "lnd: parses");
+      check(land.storedBlocks() == 1, "lnd: one stored block");
+      check(land.cell(18, 19).altitude == 8, "lnd: cell addressing");
+      check(land.cell(0, 0).altitude == 0 && !land.cell(0, 0).water(),
+            "lnd: unstored blocks are open sea");
+      check(land.cell(18, 16).fullWater(), "lnd: water flags");
+      check(std::abs(land.coastAltitude() - 30.0f * 0.67f) < 0.05f,
+            "lnd: waterline self-calibrates from the coast");
+      check(std::abs(land.heightAt(18.5f, 19.0f) - 10.0f * 0.67f) < 0.01f,
+            "lnd: interpolation");
+      check(std::abs(land.heightAt(18.25f, 18.75f) - 9.0f * 0.67f) < 0.01f,
+            "lnd: split diagonal honored");
+      std::vector<float> hs;
+      land.resampleHeights(hs, Terrain::GRID, Terrain::SIZE, 0.22f, Terrain::SEABED);
+      check(static_cast<int>(hs.size()) == (Terrain::GRID + 1) * (Terrain::GRID + 1),
+            "lnd: resample fills the grid");
+      float spike = hs[9 * (Terrain::GRID + 1) + 9];  // vertex (9,9) = cell (18,18)
+      check(std::abs(spike - (40.0f - 30.0f) * 0.67f * 0.22f) < 0.01f,
+            "lnd: resample height mapping");
+      float sea = hs[8 * (Terrain::GRID + 1) + 9];  // cell (18,16): tall but flagged
+      check(std::abs(sea + 2.5f) < 1e-3f, "lnd: flagged sea clamps under water");
+      bw::Land bad;
+      check(!bad.parse(lnd.data(), 4000), "lnd: truncated refused");
+    }
+
+    // -- the mesh pack: one red DXT1 texture, one two-submesh L3D --
+    {
+      std::vector<std::uint8_t> tex;
+      push32(tex, 16 + 124 + 8);  // informational size
+      push32(tex, 0xAB);          // id
+      push32(tex, 1);             // type DXT1
+      push32(tex, 124 + 8);       // ddsSize
+      push32(tex, 124);           // DDS header (magic already stripped)
+      push32(tex, 0);
+      push32(tex, 4);  // height
+      push32(tex, 4);  // width
+      push32(tex, 8);  // pitch
+      push32(tex, 0);  // depth
+      push32(tex, 1);  // mips
+      for (int i = 0; i < 11; ++i) push32(tex, 0);
+      push32(tex, 32);  // pixel format size
+      push32(tex, 4);   // fourCC flag
+      tex.insert(tex.end(), {'D', 'X', 'T', '1'});
+      for (int i = 0; i < 10; ++i) push32(tex, 0);  // masks, caps, reserved
+      push16(tex, 0xF800);                          // color0: pure red
+      push16(tex, 0x0000);                          // color1: black
+      push32(tex, 0);                               // all texels -> color0
+
+      std::vector<std::uint8_t> l3d = {'L', '3', 'D', '0'};
+      push32(l3d, 0);    // flags
+      push32(l3d, 278);  // size
+      push32(l3d, 2);    // submeshCount
+      push32(l3d, 76);   // submeshOffsetsOffset
+      for (int i = 0; i < 14; ++i) push32(l3d, 0);  // bbox and friends
+      push32(l3d, 84);                              // submesh 0
+      push32(l3d, 104);                             // submesh 1
+      push32(l3d, 1u << 13);                        // 0: a physics proxy
+      for (int i = 0; i < 4; ++i) push32(l3d, 0);
+      push32(l3d, 0);    // 1: drawn (status 0, lod 0)
+      push32(l3d, 1);    // one primitive
+      push32(l3d, 124);  // primitive table
+      push32(l3d, 0);
+      push32(l3d, 0);
+      push32(l3d, 128);         // the primitive
+      push32(l3d, 2);           // material: textured
+      push32(l3d, 0);           // cutout/cull/pad
+      push32(l3d, 0xAB);        // skinID
+      push32(l3d, 0x00204060);  // material color (unused: textured)
+      push32(l3d, 3);           // vertices
+      push32(l3d, 176);
+      push32(l3d, 1);  // triangles
+      push32(l3d, 272);
+      for (int i = 0; i < 4; ++i) push32(l3d, 0);  // groups/blends
+      auto vert = [&](float x, float y, float z) {
+        pushf(l3d, x);
+        pushf(l3d, y);
+        pushf(l3d, z);
+        pushf(l3d, 0.4f);  // u
+        pushf(l3d, 0.6f);  // v
+        pushf(l3d, 0.0f);
+        pushf(l3d, 1.0f);
+        pushf(l3d, 0.0f);
+      };
+      vert(0.0f, 0.0f, 0.0f);
+      vert(10.0f, 0.0f, 0.0f);
+      vert(0.0f, 10.0f, 0.0f);
+      push16(l3d, 0);
+      push16(l3d, 1);
+      push16(l3d, 2);
+
+      std::vector<std::uint8_t> meshes = {'M', 'K', 'J', 'C'};
+      push32(meshes, 1);
+      push32(meshes, 12);  // offsets are relative to the block body
+      meshes.insert(meshes.end(), l3d.begin(), l3d.end());
+      std::vector<std::uint8_t> info;
+      push32(info, 1);
+      push32(info, 0xAB);
+      push32(info, 0);
+
+      std::vector<std::uint8_t> g3d = {'L', 'i', 'O', 'n', 'H', 'e', 'A', 'd'};
+      addBlock(g3d, "ab", tex);  // texture blocks are named in lowercase hex
+      addBlock(g3d, "INFO", info);
+      addBlock(g3d, "MESHES", meshes);
+
+      bw::Pack packed;
+      check(packed.parse(g3d), "g3d: container parses");
+      bw::MeshPack mp;
+      check(mp.parse(packed), "g3d: pack indexed");
+      check(mp.meshCount() == 1 && mp.textureCount() == 1, "g3d: counts");
+      bw::BakedMesh m;
+      check(mp.bake(0, 0.1f, m), "l3d: bakes");
+      check(m.drawnSubmeshes == 1 && m.skippedSubmeshes == 1,
+            "l3d: physics submesh skipped");
+      check(m.data.vertexCount() == 3 && m.data.indices.size() == 3,
+            "l3d: geometry counts");
+      check(m.data.indices[0] == 0 && m.data.indices[1] == 2 &&
+                m.data.indices[2] == 1,
+            "l3d: winding flipped to CCW");
+      check(std::abs(m.data.vertices[9 + 0] - 1.0f) < 1e-5f, "l3d: meters applied");
+      check(m.data.vertices[6] > 0.95f && m.data.vertices[7] < 0.05f &&
+                m.data.vertices[8] < 0.05f,
+            "l3d: texel baked into vertex color");
+      check(m.texturedPrims == 1, "l3d: texture resolved via skinID");
+      bw::BakedMesh none;
+      check(!mp.bake(7, 0.1f, none), "l3d: out-of-range mesh refused");
+      std::vector<std::uint8_t> g3dCut = {'L', 'i', 'O', 'n', 'H', 'e', 'A', 'd'};
+      addBlock(g3dCut, "MESHES", {meshes.begin(), meshes.begin() + 40});
+      bw::Pack packCut;
+      check(packCut.parse(g3dCut), "g3d: truncated blob still packs");
+      bw::MeshPack mpCut;
+      check(mpCut.parse(packCut), "g3d: truncated blob still indexes");
+      check(!mpCut.bake(0, 0.1f, none), "l3d: truncated blob refuses to bake");
+    }
+
+    // -- the facade stays inert without an install --
+    {
+      bw::Assets assets;
+      std::vector<float> hs;
+      check(!assets.init(""), "facade: empty dir is inert");
+      check(assets.mesh(bw::Slot::Totem) == nullptr, "facade: no install, no meshes");
+      check(!assets.landHeights(1, hs, Terrain::GRID, Terrain::SIZE, Terrain::SEABED),
+            "facade: no install, no lands");
+    }
+
+    // -- an original island through the standard founding, twice --
+    {
+      auto altB = [](int, int) -> std::uint8_t { return 30; };
+      auto propsB = [](int, int) -> std::uint8_t { return 1; };
+      std::vector<std::uint8_t> lnd = buildLand(12, 12, 8, altB, propsB);
+      bw::Land land;
+      check(land.parse(lnd.data(), lnd.size()), "land world: plateau parses");
+      std::vector<float> hs;
+      land.resampleHeights(hs, Terrain::GRID, Terrain::SIZE,
+                           tune::kBwLandHeightScale, Terrain::SEABED);
+      World wa, wb;
+      check(wa.terrain.setHeights(hs, 4242u), "land world: heights accepted");
+      wb.terrain.setHeights(hs, 4242u);
+      wa.generateOnCurrentTerrain(4242u, 2);
+      wb.generateOnCurrentTerrain(4242u, 2);
+      check(!wa.villages.empty() && wa.home().owner == 0,
+            "land world: villages founded on imported ground");
+      for (int i = 0; i < 600; ++i) {
+        wa.update(dt);
+        wb.update(dt);
+      }
+      check(worldChecksum(wa) == worldChecksum(wb),
+            "land world: imported heights stay deterministic");
+    }
+  }
+
   // [7] Determinism: same seed, same steps, identical checksums.
   std::printf("[7] determinism\n");
   {
@@ -3927,6 +4302,9 @@ int main(int argc, char** argv) {
   std::string loadPath;
   int screenshotFrames = 90;
   std::string screenshotView = "far";
+  std::string bwDir;
+  int bwLand = 0;
+  bool bwReport = false;
 
   for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];
@@ -3950,20 +4328,40 @@ int main(int argc, char** argv) {
       screenshotPath = argv[++i];
       if (i + 1 < argc && argv[i + 1][0] != '-') screenshotFrames = std::atoi(argv[++i]);
       if (i + 1 < argc && argv[i + 1][0] != '-') screenshotView = argv[++i];
+    } else if (arg == "--bw" && i + 1 < argc) {
+      bwDir = argv[++i];
+    } else if (arg == "--land" && i + 1 < argc) {
+      bwLand = std::atoi(argv[++i]);
+    } else if (arg == "--bw-report") {
+      bwReport = true;
     } else {
       std::fprintf(stderr, "Unknown argument: %s\n", arg.c_str());
       return 2;
     }
   }
 
+  if (bwReport) {  // a console verb: no window, no game
+    bw::Assets assets;
+    assets.init(bwDir);
+    return assets.report();
+  }
   if (headless) return runHeadless(seed, headlessSteps);
   if (match) return runMatch(seed, matchDays);
 
   App app;
   app.seed = seed;
   app.rivalEnabled = rival;
+  app.bwDir = bwDir;
   if (!app.initGraphics()) return 1;
   app.initScene();
+  if (bwLand != 0) {
+    if (bwLand >= 1 && bwLand <= 5 && app.bwAssets.available() &&
+        app.rebuildWorldOnLand(bwLand, seed)) {
+      app.shell = App::Shell::Playing;
+    } else {
+      SDL_Log("Could not raise Land %d - generated an island instead", bwLand);
+    }
+  }
   if (!mapPath.empty()) {
     if (app.loadMapFromFile(mapPath)) {
       SDL_Log("Map loaded: %s", mapPath.c_str());

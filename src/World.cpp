@@ -119,9 +119,13 @@ std::vector<glm::vec2> World::findVillageSites(int count) const {
 }
 
 void World::generate(std::uint32_t seed, int godCount) {
+  terrain.generate(seed);
+  generateOnCurrentTerrain(seed, godCount);
+}
+
+void World::generateOnCurrentTerrain(std::uint32_t seed, int godCount) {
   seed_ = seed;
   miracleCounter_ = 0;
-  terrain.generate(seed);
   godCount = std::clamp(godCount, 1, tune::kMaxGods);
 
   // Found the player's home village on the best site. In a skirmish world the

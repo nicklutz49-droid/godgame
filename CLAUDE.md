@@ -1,17 +1,20 @@
 # godgame — development notes
 
 Black & White inspired god game in C++20 / OpenGL 3.3 / SDL2. No creature.
-All art is procedural placeholder; original B&W assets may be wired in later
-behind the existing interfaces (Terrain, Mesh). Personal project, no
-distribution. Slices so far: living village (docs/plan-villagers.md),
-worship/belief/mana/temple + food miracle (docs/plan-worship.md), scaffolds &
-the building roster (docs/plan-scaffolds.md), mortality & burial, multi-
-village worlds with neutrals, gods & conversion (per-god belief + ownership
-ratchet), the rival AI god (docs/plan-rival.md), the map editor & .gmap files
+All art is procedural placeholder; original B&W assets from the owner's own
+install are a RUNTIME OVERLAY (`--bw`, src/bw), never shipped. Personal
+project, no distribution. Slices so far: living village
+(docs/plan-villagers.md), worship/belief/mana/temple + food miracle
+(docs/plan-worship.md), scaffolds & the building roster
+(docs/plan-scaffolds.md), mortality & burial, multi-village worlds with
+neutrals, gods & conversion (per-god belief + ownership ratchet), the rival
+AI god (docs/plan-rival.md), the map editor & .gmap files
 (docs/plan-editor.md), the skirmish shell — menus/HUD/game-saves/temple
 collapse (docs/plan-shell.md), the balance & feel pass (difficulty profiles,
-pacing sweeps). Master arc complete through M8: docs/plan-game.md; what
-remains is docs/plan-next.md (story mode, assets, extensions).
+pacing sweeps), light & shadow (docs/plan-shading.md), the original-asset
+overlay phases A+B (docs/plan-assets.md). Master arc complete through M8:
+docs/plan-game.md; what remains is docs/plan-next.md (story mode,
+extensions) and plan-assets phases §5/C.
 
 Multi-village invariants: `World::villages[0]` is the player's home village;
 indices are stable for the session. Prop `claimedBy`/`carrier` store packed
@@ -68,6 +71,23 @@ islands — the relaxed second pass in `findVillageSites` guarantees
 contested ground). "Acts or decay" is ratified design: worship sustains
 mana, not belief; don't add belief-sustain without a new owner decision.
 
+Asset-overlay invariants (M10): `src/bw` reads the owner's B&W install at
+RUNTIME (`--bw <dir>`); asset BYTES never enter the repo, a package, or a
+save — loader code is clean-room from the openblack community's format
+docs (docs/plan-assets.md §7 is the spec; scratch caches of their sources
+are reference only, never copy code). Every loader is GL-free,
+bounds-checked, and falls back silently: no `--bw` (or an unparseable
+slot) must stay bit-identical to the procedural game, and `--headless`
+proves the formats on synthetic fixtures built inside test [18] — the
+suite never needs real assets. Mesh swaps happen ONLY at `Mesh::upload`
+via `App::uploadWorldMeshes` (F8 re-dresses; draw paths never branch on
+bw). Land heights are DATA: they enter through `Terrain::setHeights` +
+`World::generateOnCurrentTerrain` (the standard founding on given ground —
+which may found ZERO villages; app-side `rebuildWorldOnLand` falls back to
+procedural). The slot table lives in `src/bw/BWMeshMap.h`; scale constants
+(`kBwMeshScale`, `kBwLandHeightScale`) in Tuning.h await calibration
+against a real install via `--bw-report`.
+
 ## Build & test
 
 ```sh
@@ -81,8 +101,8 @@ drop-to-assign, storage absorption, worship/miracles, scaffolds, mortality,
 multi-village worlds, the conversion ratchet, the rival AI (incl. AI-vs-AI
 determinism; `--match` runs full wars), map round-trips, game-save
 round-trips (incl. lockstep continue-equality), the temple collapse, a 3-day
-economy/schedule soak, and a double-run determinism checksum. Keep it green;
-extend it with every system.
+economy/schedule soak, the B&W asset loaders on synthetic fixtures, and a
+double-run determinism checksum. Keep it green; extend it with every system.
 
 Cross-platform (Linux dev, Windows target). CMake falls back to FetchContent
 for SDL2/glm when system packages are missing — don't add hard system deps.

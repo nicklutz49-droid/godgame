@@ -45,9 +45,11 @@ BUILDING
 KEYS
   F5 / F9 / F6    quick-save / quick-load / cycle save slot (in play)
   Tab             map editor (frozen time; 1-9 tools, [ ] brush size,
-                  G owner, V village size, N blank island, F5/F9/F6 map slots)
+                  G owner, V village size, N blank island, L original
+                  island as clay, F5/F9/F6 map slots)
   T               advance time of day        R   new random island
   F7              toggle sun shadows         F2  wireframe
+  F8              original B&W meshes <-> placeholders (with --bw)
   F3 / F4         debug tint / sim speed     K / L  spawn villager / +10 res
 
 COMMAND LINE
@@ -57,5 +59,11 @@ COMMAND LINE
   godgame --no-rival          sandbox      --editor   boot into the editor
   godgame --match [days]      headless AI-vs-AI war report
   godgame --headless          run the self-test suite
+  godgame --bw <dir>          wear your own Black & White install: original
+                              islands (menu MAP: LAND 1-5 or --land N) and
+                              original buildings/trees/rocks. Read at
+                              runtime, nothing extracted or shipped.
+  godgame --bw <dir> --bw-report   check the install, print an inventory
 
-Personal project. Everything on screen is procedural placeholder art.
+Personal project. Without --bw everything on screen is procedural
+placeholder art; with it, the originals stay your own local overlay.

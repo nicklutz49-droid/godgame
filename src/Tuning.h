@@ -170,4 +170,13 @@ inline constexpr float kCorpseRotDays = 1.0f;       // unburied after this: rot
 inline constexpr float kCorpseBeliefPerDay = 0.06f; // rotting corpse nearby
 inline constexpr float kVillagerRestitution = 0.05f;
 
+// --- original-asset overlay (M10: --bw <install-dir>) ---
+// The landscape mapping fixes XZ at 1 B&W cell (10 B&W units) = 1 meter, so
+// meshes at 0.1 m per B&W unit stand in true proportion to the ground.
+inline constexpr float kBwMeshScale = 0.1f;
+// Land altitude also arrives in B&W units; scaling above 0.1 exaggerates
+// relief so the gentle originals read at our camera (calibrate by eye with
+// --bw-report + a land boot; height is DATA, changing this only re-imports).
+inline constexpr float kBwLandHeightScale = 0.22f;
+
 }  // namespace tune
