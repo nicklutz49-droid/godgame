@@ -325,9 +325,28 @@ struct SaveIO {
       w.i32(brain.combines);
       w.i32(brain.gifts);
       w.i32(brain.courtCasts);
+      w.i32(brain.rainCasts);
+      w.i32(brain.smites);
       w.f32(brain.thinkTimer_);
       w.f32(brain.cooldown_);
       w.u32(brain.rng_);
+    }
+
+    // v3: weather and comets in flight (M11).
+    w.u32(static_cast<std::uint32_t>(world.rains.size()));
+    for (const RainCloud& rc : world.rains) {
+      w.v3(rc.pos);
+      w.f32(rc.radius);
+      w.f32(rc.age);
+      w.f32(rc.duration);
+      w.i32(rc.god);
+    }
+    w.u32(static_cast<std::uint32_t>(world.fireballs.size()));
+    for (const Fireball& fb : world.fireballs) {
+      w.v3(fb.pos);
+      w.v3(fb.vel);
+      w.f32(fb.age);
+      w.i32(fb.god);
     }
 
     w.b(cam != nullptr);
@@ -407,9 +426,35 @@ struct SaveIO {
       brain.combines = r.i32();
       brain.gifts = r.i32();
       brain.courtCasts = r.i32();
+      brain.rainCasts = r.i32();
+      brain.smites = r.i32();
       brain.thinkTimer_ = r.f32();
       brain.cooldown_ = r.f32();
       brain.rng_ = r.u32();
+    }
+
+    world.rains.clear();
+    world.fireballs.clear();
+    std::uint32_t rainCount = r.u32();
+    if (rainCount > 1024) return false;
+    for (std::uint32_t i = 0; i < rainCount; ++i) {
+      RainCloud rc;
+      rc.pos = r.v3();
+      rc.radius = r.f32();
+      rc.age = r.f32();
+      rc.duration = r.f32();
+      rc.god = r.i32();
+      world.rains.push_back(rc);
+    }
+    std::uint32_t fireballCount = r.u32();
+    if (fireballCount > 1024) return false;
+    for (std::uint32_t i = 0; i < fireballCount; ++i) {
+      Fireball fb;
+      fb.pos = r.v3();
+      fb.vel = r.v3();
+      fb.age = r.f32();
+      fb.god = r.i32();
+      world.fireballs.push_back(fb);
     }
 
     bool hasCam = r.b();

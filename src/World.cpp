@@ -602,6 +602,186 @@ bool World::castFoodMiracle(const glm::vec3& p, int god) {
   return true;
 }
 
+float World::miracleCost(Miracle kind) const {
+  switch (kind) {
+    case Miracle::Food: return tune::kFoodMiracleCost;
+    case Miracle::Rain: return tune::kRainCost;
+    case Miracle::Forest: return tune::kForestCost;
+    case Miracle::Fireball: return tune::kFireballCost;
+  }
+  return 0.0f;
+}
+
+bool World::miracleUnlocked(Miracle kind, int god) const {
+  if (kind == Miracle::Food) return true;
+  BuildingType need = kind == Miracle::Fireball ? BuildingType::Wonder
+                                                : BuildingType::Dispenser;
+  for (const Village& v : villages)
+    if (v.founded && v.owner == god && v.countCompleted(need) > 0) return true;
+  return false;
+}
+
+float World::rainBoostAt(const glm::vec3& p) const {
+  for (const RainCloud& r : rains)
+    if (glm::distance(glm::vec2(p.x, p.z), glm::vec2(r.pos.x, r.pos.z)) < r.radius)
+      return tune::kRainGrowthBoost;
+  return 1.0f;
+}
+
+// The one gate every spell walks through (M11): live god, founded temple,
+// inside influence, unlocked, affordable. Belief flows only through
+// notifyDivineEvent; villager harm only through the landing seam.
+bool World::castMiracle(Miracle kind, const glm::vec3& p, int god) {
+  if (god < 0 || god >= tune::kMaxGods || !gods[god].active) return false;
+  if (!gods[god].temple.founded || !insideInfluence(p, god)) return false;
+  if (!miracleUnlocked(kind, god)) return false;
+  if (kind == Miracle::Food) {
+    if (!castFoodMiracle(p, god)) return false;
+    events.push_back({WorldEvent::Kind::MiracleCast, p,
+                      static_cast<float>(Miracle::Food), god});
+    return true;
+  }
+  if (gods[god].mana < miracleCost(kind)) return false;
+
+  XorShift rng(seed_ ^ (++miracleCounter_ * 0x9E3779B9u));
+  switch (kind) {
+    case Miracle::Rain: {
+      gods[god].mana -= tune::kRainCost;
+      RainCloud r;
+      r.pos = glm::vec3(p.x, terrain.heightAt(p.x, p.z), p.z);
+      r.radius = tune::kRainRadius;
+      r.duration = tune::kRainDuration;
+      r.god = god;
+      rains.push_back(r);
+      notifyDivineEvent(god, p, 0.0f, tune::kAweRain);
+      events.push_back({WorldEvent::Kind::MiracleCast, p,
+                        static_cast<float>(Miracle::Rain), god});
+      break;
+    }
+    case Miracle::Forest: {
+      // Plant first, pay only for a grove that took root somewhere.
+      int planted = 0;
+      for (int attempt = 0; attempt < 60 && planted < tune::kForestTrees;
+           ++attempt) {
+        float ox = rng.range(-1.0f, 1.0f) * tune::kForestRadius;
+        float oz = rng.range(-1.0f, 1.0f) * tune::kForestRadius;
+        if (ox * ox + oz * oz > tune::kForestRadius * tune::kForestRadius)
+          continue;
+        float x = p.x + ox, z = p.z + oz;
+        float h = terrain.heightAt(x, z);
+        if (h < 0.8f || h > 40.0f) continue;
+        if (terrain.normalAt(x, z).y < 0.78f) continue;
+        bool blocked = false;
+        for (const Village& v : villages)
+          blocked |= v.founded && v.insideFootprint(x, z);
+        for (const Prop& other : props)
+          if (!blocked && other.alive && other.type == PropType::Tree &&
+              glm::distance(glm::vec2(x, z),
+                            glm::vec2(other.pos.x, other.pos.z)) < 3.0f)
+            blocked = true;
+        if (blocked) continue;
+
+        Prop t;
+        t.type = PropType::Tree;
+        t.variant = static_cast<int>(rng.next() % 3u);
+        t.scale = rng.range(0.8f, 1.2f);
+        t.radius = 1.6f * t.scale;
+        t.baseYaw = rng.range(0.0f, 6.2831f);
+        t.resource = static_cast<float>(tune::kChopSwings);
+        t.pos = glm::vec3(x, 0.0f, z);
+        t.pos.y = restHeight(t);
+        t.rot = glm::angleAxis(t.baseYaw, glm::vec3(0, 1, 0));
+        t.asleep = true;
+        spawnProp(t);
+        ++planted;
+      }
+      if (planted == 0) return false;  // ocean, cliff, or a full village
+      gods[god].mana -= tune::kForestCost;
+      notifyDivineEvent(god, p, 0.0f, tune::kAweForest);
+      events.push_back({WorldEvent::Kind::ForestBloom, p,
+                        static_cast<float>(planted), god});
+      break;
+    }
+    case Miracle::Fireball: {
+      gods[god].mana -= tune::kFireballCost;
+      Fireball f;
+      // From high over the shoulder, aimed to strike p in ~1.15 s.
+      glm::vec3 start = p + glm::vec3(rng.range(-20.0f, 20.0f),
+                                      34.0f + rng.range(0.0f, 8.0f),
+                                      rng.range(-20.0f, 20.0f));
+      const float flight = 1.15f;
+      f.pos = start;
+      f.vel = (p - start) / flight;
+      f.vel.y = (p.y - start.y) / flight + 0.5f * kGravity * flight;
+      f.god = god;
+      fireballs.push_back(f);
+      events.push_back({WorldEvent::Kind::MiracleCast, p,
+                        static_cast<float>(Miracle::Fireball), god});
+      break;
+    }
+    case Miracle::Food:
+      break;  // handled above
+  }
+  return true;
+}
+
+// The comet lands: everything loose is hurled outward (villager deaths only
+// ever via applyLanding), trees scorch to stumps in place, and the blast is
+// witnessed as terror with a sliver of awe.
+void World::explodeFireball(const Fireball& f) {
+  const glm::vec3 at = f.pos;
+  const float R = tune::kFireballRadius;
+  for (Village& vil : villages) {
+    for (Villager& v : vil.villagers) {
+      // The divine grip preserves; walls (inside) shelter.
+      if (!v.alive || v.held || v.inside) continue;
+      glm::vec3 d = v.pos - at;
+      float dist = glm::length(d);
+      if (dist > R) continue;
+      glm::vec3 dir = dist > 0.01f ? d / dist : glm::vec3(0.0f, 1.0f, 0.0f);
+      dir.y += 0.85f;
+      dir = glm::normalize(dir);
+      float power = tune::kFireballImpulse * (1.0f - dist / R) + 5.0f;
+      v.state = VState::Airborne;
+      v.pendingAssign = false;
+      v.fear = 1.0f;
+      v.vel = dir * power;
+      v.pos.y += 0.35f;  // unstick so the hurl takes
+      glm::vec3 spinAxis =
+          glm::cross(glm::normalize(dir + glm::vec3(0, 0.001f, 0)),
+                     glm::vec3(0, 1, 0));
+      v.angVel = spinAxis * std::min(power * 0.12f, 5.0f);
+    }
+  }
+  for (Prop& pr : props) {
+    if (!pr.alive || pr.held) continue;
+    glm::vec3 d = pr.pos - at;
+    float dist = glm::length(d);
+    if (dist > R) continue;
+    if (pr.type == PropType::Tree && !pr.felled) {
+      // Scorched in place: the fell-to-stump slot mutation, minus the logs -
+      // fire gives nothing back.
+      pr.type = PropType::Stump;
+      pr.resource = 0.0f;
+      pr.claimedBy = -1;
+      pr.radius = 0.5f * pr.scale;
+      pr.pos.y = restHeight(pr);
+      pr.vel = glm::vec3(0.0f);
+      pr.angVel = glm::vec3(0.0f);
+      pr.asleep = true;
+      pr.uprighting = false;
+      continue;
+    }
+    glm::vec3 dir = dist > 0.01f ? d / dist : glm::vec3(0.0f, 1.0f, 0.0f);
+    dir.y += 0.7f;
+    dir = glm::normalize(dir);
+    pr.vel += dir * (tune::kFireballImpulse * (1.0f - dist / R) * 0.8f);
+    pr.asleep = false;
+  }
+  notifyDivineEvent(f.god, at, tune::kFearFireball, tune::kAweFireball);
+  events.push_back({WorldEvent::Kind::Explosion, at, R, f.god});
+}
+
 float World::restHeight(const Prop& p) const {
   float ground = terrain.heightAt(p.pos.x, p.pos.z);
   switch (p.type) {
@@ -715,8 +895,30 @@ void World::scatterProps() {
 }
 
 void World::update(float dt) {
+  // The app drains `events` after every update; headless runs never do, so
+  // keep the tail bounded (they are flashes, not history).
+  if (events.size() > 256) events.erase(events.begin(), events.end() - 64);
   dayCycle.advance(dt);
   rebuildObstacleGrid();
+
+  // M11: showers age out; comets fall and burst on whatever they meet.
+  for (RainCloud& r : rains) r.age += dt;
+  std::erase_if(rains, [](const RainCloud& r) { return r.age >= r.duration; });
+  for (std::size_t i = 0; i < fireballs.size();) {
+    Fireball& f = fireballs[i];
+    f.age += dt;
+    f.vel.y -= kGravity * dt;
+    f.pos += f.vel * dt;
+    float ground = std::max(terrain.heightAt(f.pos.x, f.pos.z),
+                            Terrain::WATER_LEVEL);
+    if (f.pos.y <= ground + 0.4f || f.age > 8.0f) {
+      Fireball burst = f;
+      fireballs.erase(fireballs.begin() + static_cast<std::ptrdiff_t>(i));
+      explodeFireball(burst);
+    } else {
+      ++i;
+    }
+  }
   // AI gods act here, in god-index order, before the villagers think - a
   // fixed spot in the frame so runs stay deterministic.
   for (int g = 0; g < tune::kMaxGods; ++g)

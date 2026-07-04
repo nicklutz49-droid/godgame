@@ -12,7 +12,8 @@ AI god (docs/plan-rival.md), the map editor & .gmap files
 (docs/plan-editor.md), the skirmish shell — menus/HUD/game-saves/temple
 collapse (docs/plan-shell.md), the balance & feel pass (difficulty profiles,
 pacing sweeps), light & shadow (docs/plan-shading.md), the original-asset
-overlay phases A+B (docs/plan-assets.md). Master arc complete through M8:
+overlay phases A+B (docs/plan-assets.md), the miracle book — rain/forest/
+fireball (docs/plan-miracles.md). Master arc complete through M8:
 docs/plan-game.md; what remains is docs/plan-next.md (story mode,
 extensions) and plan-assets phases §5/C.
 
@@ -101,8 +102,10 @@ drop-to-assign, storage absorption, worship/miracles, scaffolds, mortality,
 multi-village worlds, the conversion ratchet, the rival AI (incl. AI-vs-AI
 determinism; `--match` runs full wars), map round-trips, game-save
 round-trips (incl. lockstep continue-equality), the temple collapse, a 3-day
-economy/schedule soak, the B&W asset loaders on synthetic fixtures, and a
-double-run determinism checksum. Keep it green; extend it with every system.
+economy/schedule soak, the B&W asset loaders on synthetic fixtures, the
+miracle book (gates, rain growth, forest rooting, fireball flinging, live
+weather in saves, FAIR-never/CRUEL-does smite policy), and a double-run
+determinism checksum. Keep it green; extend it with every system.
 
 Cross-platform (Linux dev, Windows target). CMake falls back to FetchContent
 for SDL2/glm when system packages are missing — don't add hard system deps.
@@ -168,8 +171,14 @@ for SDL2/glm when system packages are missing — don't add hard system deps.
   machines in Villagers.cpp. Steering only, no A*.
 - Belief/mana flow through fixed funnels: all divine acts call
   `Village::notifyDivineEvent(god, where, fear, awe)`; only the worship dance
-  adds mana (`World::gods[owner].mana`); only `World::castFoodMiracle(p, god)`
-  (and future miracles) spend it. Influence checks go through
+  adds mana (`World::gods[owner].mana`); only miracles spend it, and every
+  spell walks through `World::castMiracle(kind, p, god)` (M11): gate
+  (`miracleUnlocked` — Dispenser for rain/forest, Wonder for fireball),
+  influence, cost, act, awe/fear. Influence checks go through
   `World::insideInfluence(p, god)` — the hand and future casts must respect
-  it.
+  it. Rain clouds and in-flight fireballs are SIM STATE (checksum + save
+  v3); `World::events` is frame-transient render/audio data drained by the
+  app — never a sim input, never checksummed or saved. The fireball
+  explosion FLINGS (Airborne + vel); it never kills directly — deaths stay
+  with the landing seam. Held and `inside` villagers are exempt.
 - Keep everything working on llvmpipe (no GL extensions beyond 3.3 core).

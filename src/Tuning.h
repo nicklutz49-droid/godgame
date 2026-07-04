@@ -125,6 +125,23 @@ inline constexpr float kVillageInfluenceScale = 90.0f;  // + belief * this
 inline constexpr float kFoodMiracleCost = 30.0f;
 inline constexpr int kFoodMiracleBundles = 4;
 
+// --- the miracle book (M11): RAIN and FOREST unlock with a completed
+// Dispenser, FIREBALL with a completed Wonder. One funnel: castMiracle. ---
+inline constexpr float kRainCost = 40.0f;
+inline constexpr float kRainRadius = 16.0f;
+inline constexpr float kRainDuration = 45.0f;      // real seconds of shower
+inline constexpr float kRainGrowthBoost = 3.0f;    // crop rate multiplier when wet
+inline constexpr float kAweRain = 0.05f;
+inline constexpr float kForestCost = 50.0f;
+inline constexpr float kForestRadius = 14.0f;
+inline constexpr int kForestTrees = 7;
+inline constexpr float kAweForest = 0.06f;
+inline constexpr float kFireballCost = 70.0f;
+inline constexpr float kFireballRadius = 9.0f;     // blast reach
+inline constexpr float kFireballImpulse = 17.0f;   // hurl speed at ground zero
+inline constexpr float kFearFireball = 0.5f;       // terror IS belief, briefly
+inline constexpr float kAweFireball = 0.03f;
+
 // --- the rival god (M5/M8): difficulty is cadence and reach, never cheats.
 // EASY/FAIR/CRUEL differ only in tempo, appetite, and boldness; the same
 // brain plays all three. Index = GodAI::profile (menu default FAIR).

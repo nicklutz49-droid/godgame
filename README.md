@@ -10,7 +10,32 @@ screen is procedural placeholder art. There is no creature, by design.
 ![The temple](docs/temple.png)
 ![The island](docs/island.png)
 
-## Current slice: the original-asset overlay
+## Current slice: the miracle book
+
+Food has company (design: [docs/plan-miracles.md](docs/plan-miracles.md)):
+
+![The miracle book](docs/miracles.png)
+
+- **Four spells, four keys** — `1` FOOD, `2` RAIN, `3` FOREST, `4`
+  FIREBALL; `M` casts the selected page at the cursor, the HUD shows its
+  name, cost, and what still locks it.
+- **Rain (40)** — a cloud over the fields for 45 s: crops under it grow at
+  triple rate even in the dark. **Forest (50)** — up to seven trees take
+  root across the circle. Both unlock with a completed Miracle Dispenser.
+- **Fireball (70)** — unlocked by the Wonder: a comet that flings whatever
+  it finds (villager deaths still only ever happen through the landing
+  seam), scorches trees to stumps, and buys terror-belief with a huge fear
+  pulse. Casting is still influence-bound — reach is faith.
+- **The rival reads the same book** — it rains on its own dry fields at
+  every difficulty (once it builds a dispenser), and on CRUEL it answers a
+  built Wonder with fireballs at whichever of your villages its ring
+  reaches. Difficulty still never cheats.
+- New sim state (clouds, comets in flight) rides the checksum and game
+  saves (v3), stays lockstep through save/load, and pacing holds: 7 of 8
+  sweep seeds still convert in days 2-5 (seed 5 became a long siege -
+  watched, tolerated).
+
+## Previous slice: the original-asset overlay
 
 The game can now wear a personally owned Black & White (2001) installation
 at runtime (design: [docs/plan-assets.md](docs/plan-assets.md)):
@@ -324,7 +349,8 @@ hard landings stun instead. The mortality seams are in place for later.
 | Mouse wheel | Zoom toward cursor |
 | `W A S D` / arrows | Move camera (Shift = faster) |
 | `Q` / `E` | Rotate camera |
-| `M` | Food miracle at the cursor (30 mana, inside influence) |
+| `1` `2` `3` `4` | Select miracle: FOOD / RAIN / FOREST / FIREBALL (HUD shows cost & locks) |
+| `M` | Cast the selected miracle at the cursor (inside influence) |
 | `T` | Advance time of day |
 | `R` | Generate a new island |
 | `Tab` | **Map editor** (frozen time; `1-9` tools, `[` `]` brush, `G` owner, `V` size, `N` blank island, `L` original island as clay, `F5`/`F9`/`F6` map slots) |
@@ -383,7 +409,7 @@ godgame --headless [steps]    no window: world-gen, physics, village economy,
                               hand-interaction, rival-AI, map/save round-trip
                               and determinism self-tests
 godgame --match [days]        no window: AI-vs-AI skirmish, day-by-day war report
-godgame --screenshot out.bmp [frames] [far|close|village|dawn|night|temple|rival|editor|menu|roster]
+godgame --screenshot out.bmp [frames] [far|close|village|dawn|night|temple|miracle|rival|editor|menu|roster]
 godgame --bw <dir>            overlay original assets from your own B&W install
 godgame --bw <dir> --land 1   play on an original island (1..5)
 godgame --bw <dir> --bw-report  no window: validate the install, print an inventory

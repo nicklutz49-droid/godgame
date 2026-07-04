@@ -17,9 +17,11 @@ STARTING
 
 THE LOOP
   Villagers gather food and wood on their own. Drop a villager onto the
-  totem to make a Worshipper - worship fills your MANA. Cast miracles (M)
-  to feed and impress. Belief grows when villagers WITNESS your acts, and
-  belief is territory: your influence rings only reach where faith does.
+  totem to make a Worshipper - worship fills your MANA. Cast miracles
+  (1-4 selects FOOD/RAIN/FOREST/FIREBALL, M casts; rain and forest need
+  a Miracle Dispenser, fireball needs the Wonder) to feed, grow, and
+  terrify. Belief grows when villagers WITNESS your acts, and belief is
+  territory: your influence rings only reach where faith does.
   Win a neutral village by impressing it past 50% belief; win the war by
   taking every village the rival owns - its temple will fall.
 
@@ -35,7 +37,8 @@ THE HAND
   Right/middle-drag       rotate & tilt camera
   Wheel                   zoom (holding a 3-stack: choose civic building)
   WASD / arrows, Q E      move / rotate camera (Shift = faster)
-  M                       food miracle at the cursor (30 mana, in influence)
+  1 2 3 4                 select miracle (food/rain/forest/fireball)
+  M                       cast the selected miracle at the cursor
 
 BUILDING
   Workshops turn wood into scaffolds. Combine stacks by gentle placement:

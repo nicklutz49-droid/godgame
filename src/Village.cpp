@@ -175,7 +175,11 @@ void Village::step(World& world, float dt, float corpseRot) {
   for (FarmCell& c : farmCells) {
     c.tendedTimer = std::max(0.0f, c.tendedTimer - dt);
     float rate = tune::kCropGrowPerDay * (c.tendedTimer > 0.0f ? tune::kCropTendBoost : 1.0f);
-    c.growth = std::min(1.0f, c.growth + rate * sun * dayFrac);
+    // A rain miracle overhead is sun AND water at once: wet cells grow at
+    // the boosted rate even in the dark (M11).
+    float wet = world.rainBoostAt(glm::vec3(c.pos.x, 0.0f, c.pos.y));
+    float light = wet > 1.0f ? std::max(sun, 0.85f) : sun;
+    c.growth = std::min(1.0f, c.growth + rate * wet * light * dayFrac);
   }
 
   // Open a new construction site when housing gets tight and wood exists.

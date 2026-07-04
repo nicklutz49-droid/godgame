@@ -315,6 +315,9 @@ const char* kEditorToolNames[9] = {"raise",  "lower", "flatten",
                                    "smooth", "forest", "rocks",
                                    "erase",  "village", "temple"};
 
+// The miracle book's pages (M11). Indexed by number key - 1, cast with M.
+const char* kMiracleNames[4] = {"FOOD", "RAIN", "FOREST", "FIREBALL"};
+
 const char* editorOwnerName(int owner) {
   if (owner == 0) return "you";
   if (owner == 1) return "rival";
@@ -374,6 +377,10 @@ struct App {
     float life() const { return kind == 2 ? 2.2f : (kind == 1 ? 1.6f : 1.2f); }
   };
   std::vector<CastEffect> effects;
+  // --- the miracle book (M11): 1-4 select, M casts, HUD shows the page ---
+  int selectedMiracle = 0;        // index into Miracle (0=food..3=fireball)
+  Mesh rainStreaks;               // one falling sheet, drawn per active cloud
+  void drainWorldEvents();        // sim events -> effects/shake (M12: sound)
   float shake = 0.0f;      // temple-collapse screen shake (decays)
   float failFlash = 0.0f;  // red edge flash when a cast is refused
   glm::vec3 nudgeTarget{0.0f};
@@ -591,6 +598,23 @@ void App::initScene() {
     MeshData md;
     md.addDisc(glm::mat4(1.0f), 1.0f, 16, glm::vec3(0.80f, 0.80f, 0.80f));
     smokeDisc.upload(md);
+  }
+  {
+    // The rain sheet: thin streaks filling a unit-radius column, y 0..16;
+    // drawn twice with scrolling offsets so the fall never ends (M11).
+    MeshData md;
+    noise::XorShift srng(77u);
+    int placed = 0;
+    for (int attempt = 0; attempt < 400 && placed < 46; ++attempt) {
+      float ox = srng.range(-1.0f, 1.0f), oz = srng.range(-1.0f, 1.0f);
+      if (ox * ox + oz * oz > 1.0f) continue;
+      glm::mat4 at = glm::translate(glm::mat4(1.0f),
+                                    glm::vec3(ox, srng.range(0.8f, 15.2f), oz));
+      md.addBox(at, glm::vec3(0.035f, 0.8f, 0.035f),
+                glm::vec3(0.62f, 0.72f, 0.90f));
+      ++placed;
+    }
+    rainStreaks.upload(md);
   }
   bubbleHungerMesh.upload(models::bubbleHunger());
   bubbleSleepMesh.upload(models::bubbleSleep());
@@ -1251,6 +1275,9 @@ void App::handleEvent(const SDL_Event& e) {
             editorTool = e.key.keysym.sym - SDLK_1;
             sculpting = false;
             SDL_Log("tool: %s", kEditorToolNames[editorTool]);
+          } else if (e.key.keysym.sym <= SDLK_4) {
+            // The miracle book: 1 food, 2 rain, 3 forest, 4 fireball.
+            selectedMiracle = e.key.keysym.sym - SDLK_1;
           }
           break;
         case SDLK_g:
@@ -1356,17 +1383,23 @@ void App::handleEvent(const SDL_Event& e) {
           break;
         case SDLK_m:
           if (!editor && hand.hasGround) {
-            if (world.castFoodMiracle(hand.groundPoint)) {
-              effects.push_back({hand.groundPoint});
-              SDL_Log("food miracle! mana %.0f/%.0f", world.gods[0].mana,
-                      world.gods[0].manaMax);
-            } else if (!world.insideInfluence(hand.groundPoint)) {
-              failFlash = 0.5f;
-              SDL_Log("cannot cast: outside your influence");
+            Miracle kind = static_cast<Miracle>(selectedMiracle);
+            if (world.castMiracle(kind, hand.groundPoint)) {
+              SDL_Log("%s! mana %.0f/%.0f", kMiracleNames[selectedMiracle],
+                      world.gods[0].mana, world.gods[0].manaMax);
             } else {
               failFlash = 0.5f;
-              SDL_Log("cannot cast: need %.0f mana (have %.0f)",
-                      tune::kFoodMiracleCost, world.gods[0].mana);
+              if (!world.miracleUnlocked(kind, 0))
+                SDL_Log("cannot cast %s: build a %s first",
+                        kMiracleNames[selectedMiracle],
+                        kind == Miracle::Fireball ? "wonder" : "miracle dispenser");
+              else if (!world.insideInfluence(hand.groundPoint))
+                SDL_Log("cannot cast: outside your influence");
+              else if (world.gods[0].mana < world.miracleCost(kind))
+                SDL_Log("cannot cast: need %.0f mana (have %.0f)",
+                        world.miracleCost(kind), world.gods[0].mana);
+              else
+                SDL_Log("the miracle found no purchase here");  // e.g. forest on stone
             }
           }
           break;
@@ -1392,6 +1425,7 @@ void App::update(float dt) {
     world.handPos = glm::vec3(0.0f, 1.0e9f, 0.0f);
     world.handSpeed = 0.0f;
     world.update(dt);
+    drainWorldEvents();
     refreshVillageRings();
     clearFallenTempleRings();
     for (CastEffect& e : effects) e.age += dt;
@@ -1480,6 +1514,7 @@ void App::update(float dt) {
     // F4 time-lapse scales the sim only; camera and hand stay real-time.
     for (int step = 0; step < simSpeed; ++step) world.update(dt);
   }
+  drainWorldEvents();
 
   refreshVillageRings();
   clearFallenTempleRings();
@@ -1543,6 +1578,48 @@ void App::update(float dt) {
   effects.erase(std::remove_if(effects.begin(), effects.end(),
                                [](const CastEffect& e) { return e.age > e.life(); }),
                 effects.end());
+}
+
+// Sim happenings become feel: every drained event turns into a pulse, a
+// bloom, or a blast - whoever cast it (the rival's casts flash too). M12
+// will grow a sound cue per kind right here.
+void App::drainWorldEvents() {
+  for (const WorldEvent& ev : world.events) {
+    switch (ev.kind) {
+      case WorldEvent::Kind::MiracleCast: {
+        CastEffect pulse{ev.pos};
+        int kind = static_cast<int>(ev.magnitude);
+        pulse.color = kind == static_cast<int>(Miracle::Rain)
+                          ? glm::vec3(0.45f, 0.62f, 0.92f)
+                          : kind == static_cast<int>(Miracle::Fireball)
+                                ? glm::vec3(1.0f, 0.45f, 0.12f)
+                                : glm::vec3(0.98f, 0.82f, 0.38f);
+        effects.push_back(pulse);
+        break;
+      }
+      case WorldEvent::Kind::ForestBloom: {
+        CastEffect column{ev.pos};
+        column.kind = 1;
+        column.color = glm::vec3(0.38f, 0.85f, 0.35f);
+        effects.push_back(column);
+        break;
+      }
+      case WorldEvent::Kind::Explosion: {
+        for (int k = 0; k < 4; ++k) {
+          CastEffect dust{ev.pos + glm::vec3(static_cast<float>(k % 2) * 4.0f - 2.0f,
+                                             0.0f,
+                                             static_cast<float>(k / 2) * 4.0f - 2.0f)};
+          dust.kind = 2;
+          dust.age = -0.08f * static_cast<float>(k);
+          dust.color = glm::vec3(0.95f, 0.55f, 0.25f);
+          effects.push_back(dust);
+        }
+        shake = std::max(shake, 0.55f);
+        break;
+      }
+    }
+  }
+  world.events.clear();
 }
 
 namespace {
@@ -1744,6 +1821,11 @@ void App::render(float time) {
         ls.push_back(
             {glm::distance(bp, cam.focus), bp, godColor(g) * (1.8f * night)});
       }
+      // Comets burn regardless of the hour (still gathered only at night -
+      // by day the emissive draw carries them).
+      for (const Fireball& f : world.fireballs)
+        ls.push_back({glm::distance(f.pos, cam.focus), f.pos,
+                      glm::vec3(1.0f, 0.42f, 0.14f) * 3.2f});
       std::sort(ls.begin(), ls.end(),
                 [](const L& a, const L& b) { return a.d < b.d; });
       for (const L& l : ls) {
@@ -2217,6 +2299,53 @@ void App::render(float time) {
   }
   lit.set("uTint", glm::vec3(1.0f));
 
+  // The miracle book's weather (M11): clouds hang, two copies of the streak
+  // sheet scroll beneath them, comets burn with a short tail. All emissive -
+  // rain and fire answer to no sun.
+  for (const RainCloud& r : world.rains) {
+    float fade = std::max(0.0f, std::min({r.age * 2.0f, 1.0f,
+                                          (r.duration - r.age) * 1.5f}));
+    float top = r.pos.y + 21.0f;
+    lit.set("uEmissive", 0.9f);
+    lit.set("uTint", glm::vec3(0.30f, 0.33f, 0.40f));
+    lit.set("uAlpha", 0.55f * fade);
+    for (int layer = 0; layer < 2; ++layer) {
+      float s = r.radius * (layer ? 0.68f : 1.0f);
+      lit.set("uModel",
+              glm::translate(glm::mat4(1.0f),
+                             glm::vec3(r.pos.x + (layer ? 2.5f : 0.0f),
+                                       top + static_cast<float>(layer) * 1.4f,
+                                       r.pos.z - (layer ? 1.8f : 0.0f))) *
+                  glm::scale(glm::mat4(1.0f), glm::vec3(s, 1.0f, s)));
+      smokeDisc.draw();
+    }
+    const float cycle = 16.0f;
+    float fall = std::fmod(time * 24.0f, cycle);
+    lit.set("uTint", glm::vec3(0.55f, 0.66f, 0.86f));
+    lit.set("uAlpha", 0.34f * fade);
+    for (int copy = 0; copy < 2; ++copy) {
+      float yBase = top - cycle - fall + (copy ? cycle : 0.0f);
+      lit.set("uModel",
+              glm::translate(glm::mat4(1.0f), glm::vec3(r.pos.x, yBase, r.pos.z)) *
+                  glm::scale(glm::mat4(1.0f),
+                             glm::vec3(r.radius * 0.85f, 1.0f, r.radius * 0.85f)));
+      rainStreaks.draw();
+    }
+  }
+  for (const Fireball& f : world.fireballs) {
+    lit.set("uEmissive", 1.0f);
+    lit.set("uTint", glm::vec3(1.0f, 0.50f, 0.16f));
+    for (int k = 0; k < 3; ++k) {
+      lit.set("uModel",
+              glm::translate(glm::mat4(1.0f), f.pos - f.vel * (0.05f * static_cast<float>(k))) *
+                  glm::scale(glm::mat4(1.0f),
+                             glm::vec3(1.15f * (1.0f - 0.28f * static_cast<float>(k)))));
+      lit.set("uAlpha", k == 0 ? 1.0f : (k == 1 ? 0.45f : 0.22f));
+      rockMeshes[0].draw();
+    }
+  }
+  lit.set("uTint", glm::vec3(1.0f));
+
   lit.set("uAlpha", 1.0f);
   lit.set("uEmissive", 0.0f);
   gl.DepthMask(GL_TRUE);
@@ -2300,10 +2429,17 @@ void App::render(float time) {
           ++freev;
         }
       }
+      Miracle sel = static_cast<Miracle>(selectedMiracle);
+      const char* spellState =
+          !world.miracleUnlocked(sel, 0)
+              ? (sel == Miracle::Fireball ? " (NEEDS WONDER)" : " (NEEDS DISPENSER)")
+              : (world.gods[0].mana < world.miracleCost(sel) ? " (NEED MANA)" : "");
       std::snprintf(line, sizeof line,
-                    "MANA %.0f/%.0f  POP %d  WOOD %d  FOOD %d  BELIEF %.0f%%  DAY %d",
+                    "MANA %.0f/%.0f  POP %d  WOOD %d  FOOD %d  BELIEF %.0f%%  DAY %d"
+                    "   M: %s %.0f%s",
                     world.gods[0].mana, world.gods[0].manaMax, pop, wood, food,
-                    belief, world.dayCycle.day);
+                    belief, world.dayCycle.day, kMiracleNames[selectedMiracle],
+                    world.miracleCost(sel), spellState);
       font::addText(hud, line, 12.0f, 10.0f, 2.0f, gold);
       if (world.gods[1].active || theirs > 0) {
         std::snprintf(line, sizeof line, "THE WAR: YOU %d  RIVAL %d  FREE %d",
@@ -2507,6 +2643,38 @@ int App::runScreenshot(const std::string& path, int frames, const std::string& v
     cam.focus = world.gods[0].temple.pos;
     cam.distance = 55.0f;
     cam.yaw = world.gods[0].temple.yaw + 3.14159f;
+  } else if (view == "miracle") {
+    // The book open on all three pages: a shower over the fields, a fresh
+    // grove, and a comet caught mid-fall.
+    cam.focus = world.home().center;
+    cam.distance = 92.0f;
+    cam.yaw = 2.3f;
+    world.dayCycle.t = 0.42f;
+    world.gods[0].mana = 100.0f;
+    glm::vec3 c = world.home().center;
+    glm::vec3 fieldMid = c;
+    if (!world.home().farmCells.empty()) {
+      fieldMid = glm::vec3(0.0f);
+      for (const FarmCell& fc : world.home().farmCells)
+        fieldMid += glm::vec3(fc.pos.x, 0.0f, fc.pos.y);
+      fieldMid /= static_cast<float>(world.home().farmCells.size());
+      fieldMid.y = world.terrain.heightAt(fieldMid.x, fieldMid.z);
+    }
+    Building disp;  // the screenshot god skips the build-up
+    disp.type = BuildingType::Dispenser;
+    disp.stage = 3;
+    disp.pos = c;
+    world.home().buildings.push_back(disp);
+    world.castMiracle(Miracle::Rain, fieldMid);
+    world.gods[0].mana = 100.0f;
+    glm::vec3 grove = c + glm::vec3(-20.0f, 0.0f, 14.0f);
+    grove.y = world.terrain.heightAt(grove.x, grove.z);
+    world.castMiracle(Miracle::Forest, grove);
+    Fireball comet;  // staged directly so the frame catches it mid-fall
+    comet.pos = c + glm::vec3(6.0f, 30.0f, 16.0f);
+    comet.vel = glm::vec3(-1.5f, -4.0f, -1.0f);
+    comet.god = 0;
+    world.fireballs.push_back(comet);
   } else if (view == "rival") {
     // The rival god's home village (falls back to the second village).
     glm::vec3 focus = world.villages.size() > 1 ? world.villages[1].center
@@ -2663,6 +2831,20 @@ std::uint64_t worldChecksum(const World& w) {
     int aiState[2] = {static_cast<int>(w.ai[g].phase),
                       static_cast<int>(w.ai[g].verb)};
     h = fnvMix(h, aiState, sizeof aiState);
+  }
+  // The miracle book's live state (M11).
+  for (const RainCloud& r : w.rains) {
+    addF(r.pos.x);
+    addF(r.pos.z);
+    addF(r.age);
+    h = fnvMix(h, &r.god, sizeof r.god);
+  }
+  for (const Fireball& f : w.fireballs) {
+    addF(f.pos.x);
+    addF(f.pos.y);
+    addF(f.pos.z);
+    addF(f.vel.y);
+    h = fnvMix(h, &f.god, sizeof f.god);
   }
   addF(w.dayCycle.t);
   return h;
@@ -4194,6 +4376,259 @@ int runHeadless(std::uint32_t seed, int steps) {
       }
       check(worldChecksum(wa) == worldChecksum(wb),
             "land world: imported heights stay deterministic");
+    }
+  }
+
+  // [19] The miracle book (M11): gates, refusals, rain that matters, forests
+  // that take root, fireballs that fling (and only fling - deaths stay with
+  // the landing seam), and weather that rides saves and lockstep.
+  std::printf("[19] the miracle book\n");
+  {
+    World w;
+    w.generate(seed);
+    Village& hv = w.home();
+    glm::vec3 at = hv.center;
+
+    // Gates: rain/forest need a Dispenser, fireball a Wonder.
+    w.gods[0].mana = 100.0f;
+    check(!w.castMiracle(Miracle::Rain, at), "rain locked without a dispenser");
+    check(!w.castMiracle(Miracle::Fireball, at), "fireball locked without a wonder");
+    Building disp;
+    disp.type = BuildingType::Dispenser;
+    disp.stage = 3;
+    disp.pos = hv.center + glm::vec3(10.0f, 0.0f, 0.0f);
+    hv.buildings.push_back(disp);
+    Building wond;
+    wond.type = BuildingType::Wonder;
+    wond.stage = 3;
+    wond.pos = hv.center + glm::vec3(-10.0f, 0.0f, 0.0f);
+    hv.buildings.push_back(wond);
+    check(w.miracleUnlocked(Miracle::Rain, 0) &&
+              w.miracleUnlocked(Miracle::Fireball, 0),
+          "completed buildings unlock the book");
+    check(!w.miracleUnlocked(Miracle::Rain, 1), "gates are per god");
+
+    // Refusals: reach and cost.
+    check(!w.castMiracle(Miracle::Rain, at + glm::vec3(400.0f, 0.0f, 0.0f)),
+          "no casting beyond the influence ring");
+    w.gods[0].mana = 5.0f;
+    check(!w.castMiracle(Miracle::Rain, at), "no casting on an empty pool");
+
+    // Rain: a cloud exists, spends mana, and the wet fields outgrow a dry
+    // twin world at midnight (farmers asleep, sun down - only the shower).
+    World dry;
+    dry.generate(seed);
+    glm::vec3 fieldMid(0.0f);
+    if (!hv.farmCells.empty()) {
+      for (const FarmCell& c : hv.farmCells)
+        fieldMid += glm::vec3(c.pos.x, 0.0f, c.pos.y);
+      fieldMid /= static_cast<float>(hv.farmCells.size());
+    } else {
+      fieldMid = at;
+    }
+    fieldMid.y = w.terrain.heightAt(fieldMid.x, fieldMid.z);
+    w.gods[0].mana = 100.0f;
+    check(w.castMiracle(Miracle::Rain, fieldMid), "rain casts");
+    check(std::abs(w.gods[0].mana - (100.0f - tune::kRainCost)) < 1e-3f,
+          "rain spends its cost");
+    check(w.rains.size() == 1 && w.rainBoostAt(fieldMid) > 1.0f,
+          "a cloud hangs over the fields");
+    check(!w.events.empty(), "casts surface as world events");
+    w.dayCycle.secondsPerDay = 60.0f;
+    dry.dayCycle.secondsPerDay = 60.0f;
+    w.dayCycle.t = 0.0f;  // midnight
+    dry.dayCycle.t = 0.0f;
+    float before = 0.0f, beforeDry = 0.0f;
+    int counted = 0;
+    for (std::size_t c = 0; c < hv.farmCells.size(); ++c) {
+      if (glm::distance(glm::vec2(fieldMid.x, fieldMid.z), hv.farmCells[c].pos) >
+          tune::kRainRadius)
+        continue;
+      before += hv.farmCells[c].growth;
+      beforeDry += dry.home().farmCells[c].growth;
+      ++counted;
+    }
+    for (int i = 0; i < 300; ++i) {
+      w.update(dt);
+      dry.update(dt);
+    }
+    float after = 0.0f, afterDry = 0.0f;
+    for (std::size_t c = 0; c < hv.farmCells.size(); ++c) {
+      if (glm::distance(glm::vec2(fieldMid.x, fieldMid.z), hv.farmCells[c].pos) >
+          tune::kRainRadius)
+        continue;
+      after += hv.farmCells[c].growth;
+      afterDry += dry.home().farmCells[c].growth;
+    }
+    check(counted > 0, "the home fields sit under the cloud");
+    check((after - before) - (afterDry - beforeDry) > 0.05f * counted,
+          "wet crops outgrow the dry twin");
+    for (int i = 0; i < static_cast<int>(tune::kRainDuration * 60.0f) + 10; ++i)
+      w.update(dt);
+    check(w.rains.empty(), "the shower passes");
+
+    // Forest: trees take root inside the circle, deterministically.
+    std::size_t treesBefore = 0;
+    for (const Prop& p : w.props)
+      if (p.alive && p.type == PropType::Tree) ++treesBefore;
+    w.gods[0].mana = 100.0f;
+    glm::vec3 grove = at + glm::vec3(24.0f, 0.0f, 0.0f);
+    grove.y = w.terrain.heightAt(grove.x, grove.z);
+    bool forestOk = w.castMiracle(Miracle::Forest, grove);
+    check(forestOk, "forest casts");
+    std::size_t planted = 0;
+    bool allValid = true;
+    for (const Prop& p : w.props) {
+      if (!p.alive || p.type != PropType::Tree) continue;
+      ++planted;
+      if (planted > treesBefore) {
+        allValid &= w.terrain.heightAt(p.pos.x, p.pos.z) > 0.7f;
+        allValid &= glm::distance(glm::vec2(p.pos.x, p.pos.z),
+                                  glm::vec2(grove.x, grove.z)) <
+                    tune::kForestRadius + 0.5f;
+      }
+    }
+    planted -= treesBefore;
+    check(planted >= 1 && planted <= static_cast<std::size_t>(tune::kForestTrees),
+          "a grove took root");
+    check(allValid, "every new tree stands on land inside the circle");
+
+    // Fireball: the comet flings a bystander and scorches a tree; nobody
+    // dies except by landing. Also: live weather rides saves bit-for-bit.
+    // Aim at the nearest standing tree so the blast provably covers one
+    // (the grove's saplings can root up to 14 m out; the blast reaches 9).
+    glm::vec3 aim = grove;
+    float nearTree = 1e9f;
+    for (const Prop& p : w.props) {
+      if (!p.alive || p.type != PropType::Tree) continue;
+      float d = glm::distance(glm::vec2(p.pos.x, p.pos.z),
+                              glm::vec2(grove.x, grove.z));
+      if (d < nearTree) {
+        nearTree = d;
+        aim = p.pos;
+      }
+    }
+    aim.y = w.terrain.heightAt(aim.x, aim.z);
+    w.gods[0].mana = 100.0f;
+    Villager& mark = hv.villagers[0];
+    mark.pos = aim + glm::vec3(2.0f, 0.0f, 0.0f);
+    mark.pos.y = w.terrain.heightAt(mark.pos.x, mark.pos.z);
+    mark.state = VState::Idle;
+    mark.inside = false;
+    check(w.castMiracle(Miracle::Fireball, aim), "fireball casts");
+    check(std::abs(w.gods[0].mana - (100.0f - tune::kFireballCost)) < 1e-3f,
+          "fireball spends its cost");
+    check(w.fireballs.size() == 1, "a comet is falling");
+
+    // Save with a comet in flight and fresh rain: lockstep must hold.
+    w.gods[0].mana = 100.0f;
+    check(w.castMiracle(Miracle::Rain, fieldMid), "rain returns for the save");
+    std::vector<std::uint8_t> snap;
+    savefile::save(w, snap, nullptr);
+    World wl;
+    savefile::CamState cs;
+    check(savefile::load(wl, snap.data(), snap.size(), &cs),
+          "a save with live weather loads");
+    check(worldChecksum(wl) == worldChecksum(w), "loaded weather matches");
+    float stumpDist = 1e9f;
+    for (int i = 0; i < 240; ++i) {
+      w.update(dt);
+      wl.update(dt);
+    }
+    check(worldChecksum(wl) == worldChecksum(w),
+          "weather stays lockstep after load");
+    check(w.fireballs.empty(), "the comet came down");
+    check(mark.state == VState::Airborne || mark.state == VState::Swim ||
+              !mark.alive || mark.fear > 0.5f,
+          "the bystander felt the blast");
+    for (const Prop& p : w.props) {
+      if (!p.alive || p.type != PropType::Stump) continue;
+      stumpDist = std::min(stumpDist, glm::distance(glm::vec2(p.pos.x, p.pos.z),
+                                                    glm::vec2(aim.x, aim.z)));
+    }
+    check(stumpDist < tune::kFireballRadius + 0.5f,
+          "a tree in the blast is a scorched stump");
+  }
+
+  // [19b] The rival's new powers: FAIR never smites, CRUEL eventually does.
+  std::printf("[19b] the rival and the book\n");
+  {
+    int outpost = -1;
+    auto rigSmiteWorld = [&](int profile, World& w) -> bool {
+      w.generate(seed, 2);
+      if (!w.gods[1].active) return false;
+      w.ai[1].profile = profile;
+      // Index, not pointer: editorPlaceVillage below grows the vector.
+      int rivalHome = -1;
+      for (std::size_t v = 0; v < w.villages.size(); ++v)
+        if (w.villages[v].founded && w.villages[v].owner == 1)
+          rivalHome = static_cast<int>(v);
+      if (rivalHome < 0) return false;
+      // A player outpost inside the rival's reach, via the editor verb.
+      glm::vec2 rc(w.villages[rivalHome].center.x,
+                   w.villages[rivalHome].center.z);
+      int placed = -1;
+      const glm::vec2 dirs[8] = {{1, 0},   {-1, 0},  {0, 1},   {0, -1},
+                                 {0.7f, 0.7f},  {0.7f, -0.7f},
+                                 {-0.7f, 0.7f}, {-0.7f, -0.7f}};
+      for (const glm::vec2& d : dirs) {
+        placed = w.editorPlaceVillage(rc + d * 64.0f, 0, 0);
+        if (placed >= 0) break;
+      }
+      if (placed < 0) return false;
+      if (!w.insideInfluence(w.villages[placed].center, 1)) return false;
+      outpost = placed;
+      // Starve every branch above Smite: fed stores, all adults devoted,
+      // no scaffolds (none exist this early), rain locked (no dispenser),
+      // Sustain out of reach (deep pool, big max), no neutrals courtable.
+      Building wond;
+      wond.type = BuildingType::Wonder;
+      wond.stage = 3;
+      wond.pos = w.villages[rivalHome].center + glm::vec3(8.0f, 0.0f, 0.0f);
+      w.villages[rivalHome].buildings.push_back(wond);
+      w.gods[1].manaMax = 200.0f;
+      w.gods[1].mana = 150.0f;
+      for (Village& v : w.villages) {
+        if (!v.founded) continue;
+        v.food = 60;
+        if (v.owner == 1)
+          for (Villager& p : v.villagers) p.job = Job::Worshipper;
+        // Neutrals join the player so Court finds nothing to woo.
+        if (v.owner < 0) {
+          v.belief[0] = 0.9f;
+        }
+      }
+      return true;
+    };
+    World cruel;
+    bool rigged = rigSmiteWorld(2, cruel);
+    check(rigged, "the smite stage is riggable");
+    if (rigged) {
+      World fair;
+      rigSmiteWorld(1, fair);
+      // Pin the staged conditions: mana deep, larders full (Feed stays
+      // quiet), and the rival's faith high so its ring keeps reaching the
+      // outpost ("acts or decay" would otherwise shrink it under 64 m).
+      auto pin = [&](World& w2) {
+        w2.gods[1].mana = std::max(w2.gods[1].mana, 120.0f);
+        for (Village& v : w2.villages) {
+          if (!v.founded) continue;
+          v.food = std::max(v.food, 40);
+          if (v.owner == 1) v.belief[1] = std::max(v.belief[1], 0.6f);
+        }
+        // The outpost's loyalty is pinned so the ratchet can't steal the
+        // smite target out from under the test.
+        if (outpost >= 0) w2.villages[outpost].belief[0] = 0.9f;
+      };
+      for (int i = 0; i < 60 * 60; ++i) {
+        pin(cruel);
+        pin(fair);
+        cruel.update(dt);
+        fair.update(dt);
+      }
+      check(cruel.ai[1].smites >= 1, "CRUEL eventually hurls fire");
+      check(fair.ai[1].smites == 0, "FAIR never does");
+      check(cruel.ai[1].rainCasts == 0, "rain stays locked without a dispenser");
     }
   }
 

@@ -72,6 +72,43 @@ struct God {
   float manaMax = 100.0f;
 };
 
+// The miracle book (M11). Values are the 1-4 selection keys minus one.
+enum class Miracle : int { Food = 0, Rain = 1, Forest = 2, Fireball = 3 };
+
+// A cast rain shower: crops under it grow fast even in the dark. Sim state
+// (checksummed, saved); expires by age.
+struct RainCloud {
+  glm::vec3 pos{0.0f};  // ground point it was cast on
+  float radius = 0.0f;
+  float age = 0.0f;
+  float duration = 0.0f;
+  int god = 0;
+};
+
+// A falling comet. Sim state (checksummed, saved); explodes on impact.
+struct Fireball {
+  glm::vec3 pos{0.0f};
+  glm::vec3 vel{0.0f};
+  float age = 0.0f;
+  int god = 0;
+};
+
+// Frame-transient happenings for the render/audio side (cast flashes,
+// explosions - M12 will feed sound from these). The app drains (copies +
+// clears) the list after every update; sim-side a size cap keeps headless
+// runs bounded. NEVER a sim input, never in the checksum or saves.
+struct WorldEvent {
+  enum class Kind : std::uint8_t {
+    MiracleCast,  // magnitude = miracle index
+    Explosion,    // magnitude = blast radius
+    ForestBloom,
+  };
+  Kind kind;
+  glm::vec3 pos{0.0f};
+  float magnitude = 0.0f;
+  int god = 0;
+};
+
 class World {
  public:
   // Mesh-space half height of the tree model; trees plant so the trunk base
@@ -86,6 +123,9 @@ class World {
   God gods[tune::kMaxGods];
   GodAI ai[tune::kMaxGods];  // brains for gods with the ai flag set
   DayCycle dayCycle;
+  std::vector<RainCloud> rains;
+  std::vector<Fireball> fireballs;
+  std::vector<WorldEvent> events;  // transient; see WorldEvent
 
   Village& home() { return villages[0]; }
   const Village& home() const { return villages[0]; }
@@ -187,6 +227,16 @@ class World {
   // Dispenser in an owned village covers the cost first). Deterministic.
   bool castFoodMiracle(const glm::vec3& p, int god = 0);
 
+  // The one entry for every spell (M11): gate + influence + cost + act +
+  // awe/fear, per docs/plan-miracles.md. Food routes to castFoodMiracle.
+  bool castMiracle(Miracle kind, const glm::vec3& p, int god = 0);
+  // RAIN/FOREST want a completed Dispenser in a village the god owns;
+  // FIREBALL wants a completed Wonder. Food is always known.
+  bool miracleUnlocked(Miracle kind, int god) const;
+  float miracleCost(Miracle kind) const;
+  // kRainGrowthBoost when a cloud covers p, else 1 (crops ask per cell).
+  float rainBoostAt(const glm::vec3& p) const;
+
   // --- scaffold verbs (called by the hand; driven directly by tests) ---
 
   // Merge the held scaffold into a nearby one (sum capped at 7).
@@ -209,6 +259,7 @@ class World {
   // A god just lost its last village: the temple crumbles into flung rubble
   // (ordinary rock props), the island quakes, the conqueror's awe rings out.
   void collapseTemple(int god, int conqueror);
+  void explodeFireball(const Fireball& f);
   void scatterProps();
   std::vector<glm::vec2> findVillageSites(int count) const;
   int scaffoldHostVillage(const glm::vec3& pos, int count, int god) const;

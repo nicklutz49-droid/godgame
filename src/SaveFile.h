@@ -14,7 +14,7 @@ class World;
 // save -> load -> save is byte-stable. Sim-side, no GL, deterministic.
 namespace savefile {
 
-inline constexpr std::uint32_t kVersion = 2;  // v2: +GodAI profile
+inline constexpr std::uint32_t kVersion = 3;  // v3: +rains/fireballs (M11)
 
 // The view, restored for the player's comfort (ignored headless).
 struct CamState {

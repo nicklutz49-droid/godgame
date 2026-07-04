@@ -27,6 +27,8 @@ class GodAI {
     Combine,  // merge scaffold stacks toward the plan's count
     Gift,     // haul or hurl a resource onto another village's pad
     Court,    // food miracle at a village it wants to win over
+    Rain,     // shower dry fields in an owned village (M11)
+    Smite,    // CRUEL only: a fireball on a reachable enemy village (M11)
   };
 
   int god = 1;
@@ -39,7 +41,7 @@ class GodAI {
 
   // Observable behavior counters (tests now, HUD later).
   int devotions = 0, feeds = 0, placements = 0, combines = 0, gifts = 0,
-      courtCasts = 0;
+      courtCasts = 0, rainCasts = 0, smites = 0;
 
   void reset(const World& world, int godIdx);
   void update(World& world, float dt);

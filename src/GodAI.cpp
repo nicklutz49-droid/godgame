@@ -216,6 +216,12 @@ void GodAI::executeRelease(World& world) {
     case Verb::Court:
       if (world.castFoodMiracle(target_, god)) ++courtCasts;
       break;
+    case Verb::Rain:
+      if (world.castMiracle(Miracle::Rain, target_, god)) ++rainCasts;
+      break;
+    case Verb::Smite:
+      if (world.castMiracle(Miracle::Fireball, target_, god)) ++smites;
+      break;
     case Verb::None:
       break;
   }
@@ -481,6 +487,34 @@ void GodAI::think(World& world) {
     }
   }
 
+  // --- Rain: dry fields in an owned village get a shower (M11). The
+  // dispenser gate binds gods equally; profiles differ only through the
+  // mana reserve they keep. ---
+  if (world.miracleUnlocked(Miracle::Rain, god) &&
+      me.mana >= tune::kRainCost + tune::kAiProfiles[profile].manaReserve) {
+    for (std::size_t vi = 0; vi < world.villages.size(); ++vi) {
+      Village& v = world.villages[vi];
+      if (!v.founded || v.owner != god || v.farmCells.empty()) continue;
+      glm::vec3 fieldMid(0.0f);
+      float growth = 0.0f;
+      for (const FarmCell& c : v.farmCells) {
+        fieldMid += glm::vec3(c.pos.x, 0.0f, c.pos.y);
+        growth += c.growth;
+      }
+      float n = static_cast<float>(v.farmCells.size());
+      fieldMid /= n;
+      growth /= n;
+      fieldMid.y = world.terrain.heightAt(fieldMid.x, fieldMid.z);
+      if (growth > 0.45f) continue;                      // doing fine
+      if (world.rainBoostAt(fieldMid) > 1.0f) continue;  // already raining
+      verb = Verb::Rain;
+      target_ = fieldMid;
+      targetVillage_ = static_cast<int>(vi);
+      phase = Phase::ToTarget;
+      return;
+    }
+  }
+
   // --- Sustain: with the pool overflowing, spend it the way a player
   // would - a miracle over the owned village whose faith sags most (belief
   // is worship fuel and ring reach). ---
@@ -530,6 +564,36 @@ void GodAI::think(World& world) {
       return;
     }
     if (orderGiftRun(world, courtV)) return;
+  }
+
+  // --- Smite (CRUEL only, M11): a fireball on the enemy's weakest village,
+  // once its own Wonder stands, the pool is deep, and the ring genuinely
+  // reaches - influence limits the god just like it limits the player. ---
+  if (profile == 2 && world.miracleUnlocked(Miracle::Fireball, god) &&
+      me.mana >= tune::kFireballCost + tune::kAiProfiles[profile].manaReserve) {
+    XorShift r(rng_);
+    bool wrathful = r.uniform() < tune::kAiProfiles[profile].aggression * 0.5f;
+    rng_ = r.state;
+    if (wrathful) {
+      int enemyV = -1;
+      float weakest = 2.0f;
+      for (std::size_t nv = 0; nv < world.villages.size(); ++nv) {
+        const Village& n = world.villages[nv];
+        if (!n.founded || n.owner < 0 || n.owner == god) continue;
+        if (!world.insideInfluence(n.center, god)) continue;
+        if (n.belief[n.owner] < weakest) {
+          weakest = n.belief[n.owner];
+          enemyV = static_cast<int>(nv);
+        }
+      }
+      if (enemyV >= 0) {
+        verb = Verb::Smite;
+        target_ = world.villages[enemyV].center;
+        targetVillage_ = enemyV;
+        phase = Phase::ToTarget;
+        return;
+      }
+    }
   }
 
   // --- Contest: no neutrals left (or mana burning a hole) - pressure the
