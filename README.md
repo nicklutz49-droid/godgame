@@ -309,28 +309,35 @@ live in `src/Tuning.h`.
 
 ## Building
 
-Requires CMake 3.16+ and a C++20 compiler. SDL2 and glm are found on the
-system when available and otherwise fetched and built automatically.
-
-### Linux
+One command builds whatever state the tree is in and stages a ready-to-play
+copy in `dist/` — the game boots to the title menu (CONTINUE / SKIRMISH /
+SANDBOX / EDITOR / QUIT), so `dist/` plus `PLAY.txt` is the whole game:
 
 ```sh
-sudo apt install libsdl2-dev libglm-dev   # optional but faster
+./build.sh          # Linux/macOS: build + self-test + stage dist/godgame
+build.bat           # Windows:     build + self-test + stage dist\godgame.exe
+```
+
+Both scripts configure Release, compile, run the full `--headless` self-test
+suite (refusing to stage a broken build — pass `--skip-tests` / `skiptests`
+to skip), then copy the binary and `PLAY.txt` into `dist/`. Add `--run` /
+`run` to launch the game afterwards. New sources, features, and gameplay need
+no script changes — CMake owns the file list. `maps/` and `saves/` are
+created next to the exe as you play, so the `dist/` folder can be moved
+anywhere (on Windows the SDL2 fallback links statically: one exe, no DLLs).
+
+Requires CMake 3.16+ and a C++20 compiler. SDL2 and glm are found on the
+system when available and otherwise fetched and built automatically (the
+first configure is slow, later builds are fast). Manual equivalent:
+
+```sh
+sudo apt install libsdl2-dev libglm-dev   # Linux, optional but faster
 cmake -B build && cmake --build build -j
 ./build/godgame
 ```
 
-### Windows
-
-Open the folder in Visual Studio (CMake project) or run:
-
-```sh
-cmake -B build
-cmake --build build --config Release
-build\Release\godgame.exe
-```
-
-The first configure downloads and builds SDL2; later builds are fast.
+On Windows, opening the folder in Visual Studio (CMake project) also works;
+`build.bat` uses whatever toolchain CMake finds.
 
 ## Command line
 
