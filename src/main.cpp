@@ -2966,23 +2966,23 @@ int runHeadless(std::uint32_t seed, int steps) {
     w11.update(dtr);
     check(ph.owner == 1, "your lapsed home falls to overwhelming rival faith");
     check(w11.godBroken(0), "with no villages left, you are broken");
-    int rivalHome2 = -1;
-    for (std::size_t v = 0; v < w11.villages.size(); ++v)
-      if (w11.villages[v].owner == 1 && static_cast<int>(v) != 0)
-        rivalHome2 = static_cast<int>(v);
-    if (rivalHome2 > 0) {
-      // Hand every rival village to the player: the rival breaks too.
-      for (Village& v : w11.villages)
-        if (v.founded && v.owner == 1) {
-          v.belief[0] = tune::kStealBelief + 0.05f;
-          v.belief[1] = tune::kStealOwnerBelow - 0.05f;
-        }
-      w11.update(dtr);
-      check(w11.godBroken(1), "the rival can be broken the same way");
-      const GodAI& brain = w11.ai[1];
+    // The mirror, on a fresh world (a HEALTHY challenger - a broken god's
+    // residual faith can no longer claim villages): the rival breaks too,
+    // and its hand goes still.
+    World w12;
+    w12.generate(seed, 2);
+    for (Village& v : w12.villages)
+      if (v.founded && v.owner == 1) {
+        v.belief[0] = tune::kStealBelief + 0.05f;
+        v.belief[1] = tune::kStealOwnerBelow - 0.05f;
+      }
+    w12.update(dtr);
+    check(w12.godBroken(1), "the rival can be broken the same way");
+    {
+      const GodAI& brain = w12.ai[1];
       int actsBefore = brain.devotions + brain.feeds + brain.placements +
                        brain.combines + brain.gifts + brain.courtCasts;
-      for (int s = 0; s < 20 * 60; ++s) w11.update(dtr);
+      for (int s = 0; s < 20 * 60; ++s) w12.update(dtr);
       int actsAfter = brain.devotions + brain.feeds + brain.placements +
                       brain.combines + brain.gifts + brain.courtCasts;
       check(actsAfter == actsBefore && brain.phase == GodAI::Phase::Rest,
@@ -3219,6 +3219,136 @@ int runHeadless(std::uint32_t seed, int steps) {
       check(savefile::load(wcl, csav.data(), csav.size()) &&
                 wcl.gods[1].ruined && !wcl.gods[1].temple.founded,
             "ruin survives the save file");
+    }
+  }
+
+  // [16] Review fixes: regressions locked in from the M7 audit.
+  std::printf("[16] review fixes\n");
+  {
+    const float dtr = 1.0f / 60.0f;
+
+    // atan2det tracks std::atan2 closely everywhere (founding yaw math).
+    {
+      float worst = 0.0f;
+      for (int k = 0; k < 360; ++k) {
+        float a = 6.2831853f * static_cast<float>(k) / 360.0f;
+        float y = std::sin(a), x = std::cos(a);
+        float d = std::abs(noise::atan2det(y, x) - std::atan2(y, x));
+        worst = std::max(worst, d);
+      }
+      check(worst < 1.0e-3f, "deterministic atan2 matches libm to a milliradian");
+    }
+
+    // A ruined god's residual faith cannot claim villages.
+    World w16;
+    w16.generate(seed, 2);
+    int rHome = -1;
+    for (std::size_t v = 0; v < w16.villages.size(); ++v)
+      if (w16.villages[v].owner == 1) rHome = static_cast<int>(v);
+    if (rHome > 0 && w16.villages.size() >= 3) {
+      w16.villages[rHome].belief[0] = tune::kStealBelief + 0.05f;
+      w16.villages[rHome].belief[1] = tune::kStealOwnerBelow - 0.05f;
+      w16.update(dtr);  // rival breaks, temple falls
+      check(w16.gods[1].ruined, "the rival is ruined");
+      int neutral = -1;
+      for (std::size_t v = 1; v < w16.villages.size(); ++v)
+        if (w16.villages[v].owner < 0) neutral = static_cast<int>(v);
+      if (neutral > 0) {
+        w16.villages[neutral].belief[1] = 0.9f;  // ghost faith, huge lead
+        w16.villages[neutral].belief[0] = 0.05f;
+        w16.update(dtr);
+        check(w16.villages[neutral].owner == -1,
+              "a ruined god's faith claims nothing");
+      }
+    }
+
+    // A tree settling on a FULL wood pile is declined - and replants
+    // instead of wedging asleep on the pad forever.
+    World w17;
+    w17.generate(seed);
+    Village& hv = w17.home();
+    hv.wood = hv.woodCap();
+    Prop tree;
+    tree.type = PropType::Tree;
+    tree.scale = 1.0f;
+    tree.radius = 1.6f;
+    tree.resource = static_cast<float>(tune::kChopSwings);
+    tree.pos = hv.storagePos() + glm::vec3(0.0f, 4.0f, 0.0f);
+    tree.asleep = false;
+    int treeIdx = w17.spawnProp(tree);
+    for (int s = 0; s < 420; ++s) {
+      w17.update(dtr);
+      hv.wood = hv.woodCap();  // pin: builders withdraw wood mid-test
+    }
+    check(w17.props[treeIdx].alive && hv.wood == hv.woodCap(),
+          "a full pile declines the tree");
+    check(w17.props[treeIdx].rot.w > 0.99f || w17.props[treeIdx].uprighting,
+          "and the declined tree replants instead of wedging");
+
+    // Large Abodes house people (their beds were phantom capacity).
+    {
+      Building big;
+      big.type = BuildingType::LargeAbode;
+      big.pos = hv.center + glm::vec3(6.0f, 0.0f, -6.0f);
+      big.stage = 3;
+      int bigIdx = static_cast<int>(hv.buildings.size());
+      hv.buildings.push_back(big);
+      bool claimed = false;
+      for (int k = 0; k < 64 && !claimed; ++k) {
+        int bed = hv.findHomeFor(0);
+        if (bed < 0) break;
+        claimed = bed == bigIdx;
+      }
+      check(claimed, "a Large Abode's beds are real");
+    }
+
+    // Graveyard sustain slows the fade but never grows belief on its own.
+    World w18;
+    w18.generate(seed);
+    Village& gv = w18.home();
+    for (Villager& p : gv.villagers)
+      if (p.job == Job::Worshipper) p.job = Job::None;  // no dance sustain
+    for (int k = 0; k < 5; ++k) {
+      Building g;
+      g.type = BuildingType::Graveyard;
+      g.pos = gv.center + glm::vec3(8.0f + 3.0f * static_cast<float>(k), 0.0f, 8.0f);
+      g.stage = 3;
+      gv.buildings.push_back(g);
+    }
+    gv.belief[0] = 0.5f;
+    w18.handPos = glm::vec3(0.0f, 1.0e9f, 0.0f);
+    for (int s = 0; s < 20 * 60; ++s) w18.update(dtr);
+    std::printf("      belief with 5 graveyards, no worship: %.3f\n", gv.belief[0]);
+    check(gv.belief[0] <= 0.5f + 1.0e-3f,
+          "graveyards sustain belief, they don't mint it");
+
+    // Combining scaffolds afloat keeps the stack on the water, not the seabed.
+    {
+      glm::vec2 sea(0.0f, 0.0f);
+      bool found = false;
+      for (float d = Terrain::SIZE * 0.46f; d > 40.0f && !found; d -= 8.0f) {
+        glm::vec2 p(d, 0.0f);
+        if (w17.terrain.heightAt(p.x, p.y) < -6.0f) {
+          sea = p;
+          found = true;
+        }
+      }
+      if (found) {
+        auto mkScaffold = [&](glm::vec2 at) {
+          Prop s;
+          s.type = PropType::Scaffold;
+          s.resource = 1.0f;
+          s.radius = 1.0f;
+          s.pos = glm::vec3(at.x, Terrain::WATER_LEVEL + 0.3f, at.y);
+          s.asleep = true;
+          return w17.spawnProp(s);
+        };
+        int a = mkScaffold(sea);
+        int b = mkScaffold(sea + glm::vec2(0.8f, 0.0f));
+        check(w17.tryCombineScaffold(b) == a, "afloat scaffolds still combine");
+        check(w17.props[a].pos.y > Terrain::WATER_LEVEL - 0.5f,
+              "and the stack floats instead of sinking to the seabed");
+      }
     }
   }
 

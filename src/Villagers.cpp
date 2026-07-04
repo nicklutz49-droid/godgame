@@ -506,6 +506,13 @@ void workCycleComplete(World& w, Village& vil, int vi, int i) {
     Prop& p = w.props[v.carriedProp];
     p.carrier = -1;
     vil.absorbProp(w, v.carriedProp);
+    if (p.alive) {
+      // The pile is full: set it down for real and leave it be a while.
+      p.asleep = false;
+      p.vel = glm::vec3(0.0f);
+      v.blacklistProp = v.carriedProp;
+      v.blacklistTimer = 6.0f;
+    }
     v.carriedProp = -1;
     v.state = VState::Idle;
     v.stateTimer = 0.2f;
@@ -516,6 +523,12 @@ void workCycleComplete(World& w, Village& vil, int vi, int i) {
   // Job-specific work.
   if (v.targetProp >= 0) {
     Prop& p = w.props[v.targetProp];
+    if (!p.alive || p.held) {  // snatched away mid-reach (the hand, usually)
+      v.targetProp = -1;
+      v.state = VState::Idle;
+      v.stateTimer = 0.3f;
+      return;
+    }
     if (p.type == PropType::Log || p.type == PropType::Food ||
         p.type == PropType::Body) {
       // Shoulder it: resources head for the pile, the dead for the graveyard.
@@ -1369,9 +1382,11 @@ GrabTarget pickTarget(const World& world, const glm::vec3& origin,
       float disc = b * b - c;
       if (disc < 0.0f) continue;
       float t = -b - std::sqrt(disc);
-      // Villagers win near-ties: grabbing the person you point at matters
-      // more than the tree behind them.
-      if (t > 0.0f && t < bestT * 1.15f && t < maxDist) {
+      // Villagers win near-ties against PROPS: grabbing the person you
+      // point at matters more than the tree behind them. Between villagers
+      // it is strictly the nearest.
+      float tie = out.isVillager() ? 1.0f : 1.15f;
+      if (t > 0.0f && t < bestT * tie && t < maxDist) {
         bestT = std::min(t, bestT);
         out.kind = GrabTarget::Kind::Villager;
         out.village = static_cast<int>(vi);

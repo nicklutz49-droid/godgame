@@ -270,7 +270,34 @@ arrays, rings, AI). To raise it to 3:
   show "SLOT 2 - DAY 7, POP 31" without full loads (bump save version).
 - `--match-csv` (see M8).
 
-## 10. Import original assets
+## 10. State of the code: the 2026-07 audit
+
+A multi-lens adversarial review ran after M7. Nine grounded findings, ALL
+fixed and regression-locked in headless section [16]:
+
+1. A ruined god could still claim villages through the ratchet (now gated).
+2. Villagers could shoulder a prop the hand was holding (re-validated).
+3. Graveyard "sustain" could reverse decay and mint unbounded belief
+   (decay clamped ≥ 0, belief clamped ≤ 1).
+4. Large Abode beds were phantom capacity — `findHomeFor` only knew Houses.
+5. A full storage pile silently swallowed the settle-absorb transition,
+   wedging trees asleep on the pad (absorb now reports decline).
+6. Combining scaffolds afloat teleported the stack to the seabed.
+7. Founding yaws used `std::atan2` — cross-platform bit-identity violation;
+   replaced with `noise::atan2det` (fixed-order IEEE ops).
+8. Deposits declined by a full store levitated at chest height and were
+   instantly re-claimed (now dropped + briefly blacklisted).
+9. `pickTarget`'s villager tie-break let a farther villager steal the pick.
+
+**Audit coverage note for the next maintainer**: the review lenses that
+completed were world/villagers/village-economy; the GodAI, app-shell,
+save-completeness, and cross-platform/perf lenses were cut short (agent
+budget) — re-run them before 1.0. Known soft spots worth a look:
+`worldChecksum` does not hash prop state directly (divergence surfaces only
+through villager behavior — consider adding prop pos/alive to the hash),
+and the O(V·P) corpse scan in `Village::step` (see §1 perf).
+
+## 11. Import original assets
 
 The full plan lives in **[plan-assets.md](plan-assets.md)**: the B&W file
 formats (LND terrain, G3D/L3D meshes, ANM animations, SAD audio), the

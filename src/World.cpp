@@ -230,7 +230,7 @@ void World::editorPlaceTemple(int god, glm::vec2 pos) {
       face = glm::vec2(v.center.x, v.center.z);
     }
   }
-  g.temple.yaw = std::atan2(face.x - pos.x, face.y - pos.y);
+  g.temple.yaw = noise::atan2det(face.x - pos.x, face.y - pos.y);
   wakeGod(god);
   ai[god].reset(*this, god);
 }
@@ -401,7 +401,7 @@ void World::foundTemple(int god, int villageIdx) {
   terrain.flattenDisc(best.x, best.y, 16.0f, targetH, placed ? 0.95f : 1.0f);
   temple.founded = true;
   temple.pos = glm::vec3(best.x, terrain.heightAt(best.x, best.y), best.y);
-  temple.yaw = std::atan2(village.center.x - best.x, village.center.z - best.y);
+  temple.yaw = noise::atan2det(village.center.x - best.x, village.center.z - best.y);
 }
 
 bool World::insideInfluence(const glm::vec3& p, int god) const {
@@ -436,7 +436,8 @@ void World::updateOwnership() {
     int best = -1;
     float bestB = 0.0f, secondB = 0.0f;
     for (int g = 0; g < tune::kMaxGods; ++g) {
-      if (!gods[g].active || g == v.owner) continue;
+      // A ruined god is out of the war: its faith cannot claim villages.
+      if (!gods[g].active || gods[g].ruined || g == v.owner) continue;
       if (v.belief[g] > bestB) {
         secondB = bestB;
         bestB = v.belief[g];
@@ -761,7 +762,7 @@ void World::update(float dt) {
             v.absorbProp(*this, static_cast<int>(idx));
             if (!p.alive && sender >= 0)  // a skill-shot gift, received
               notifyDivineEvent(sender, p.pos, 0.0f, tune::kAweGift);
-            absorbed = true;
+            absorbed = !p.alive;  // a full pile declines: fall through
             break;
           }
         }
@@ -813,7 +814,9 @@ int World::tryCombineScaffold(int scaffoldIdx) {
   target.scale = 1.0f;
   target.radius = 0.9f + 0.18f * target.resource;  // taller stack, fatter pick
   target.asleep = true;
-  target.pos.y = restHeight(target);
+  // Afloat, a stack rests on the water, never on the seabed below it.
+  target.pos.y = std::max(restHeight(target),
+                          Terrain::WATER_LEVEL + target.radius * 0.3f);
   held.alive = false;
   held.held = false;
   return best;
@@ -904,7 +907,7 @@ bool World::tryPlaceScaffold(int scaffoldIdx, BuildingType civicChoice, int god)
   b.pos = glm::vec3(s.pos.x, terrain.heightAt(s.pos.x, s.pos.z), s.pos.z);
   glm::vec2 toCenter = glm::vec2(village.center.x, village.center.z) -
                        glm::vec2(s.pos.x, s.pos.z);
-  b.yaw = std::atan2(toCenter.x, toCenter.y);
+  b.yaw = noise::atan2det(toCenter.x, toCenter.y);
   b.stage = 0;
   b.tier = count;      // scaffolds ARE the material: no wood hauling
   b.woodCost = 0;

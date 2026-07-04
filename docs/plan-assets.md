@@ -145,25 +145,104 @@ with ANM skeletal clips. Two viable levels:
 Do C1; measure appetite before C2. Trees/buildings from Phase B already
 carry most of the fidelity.
 
-## 7. Format reference (verified against openblack)
+## 7. Format reference (verified against the openblack parsers)
 
-> Maintainer note: layouts below were cross-checked against the openblack
-> parsers at research time; when in doubt, re-read their source — repo:
-> github.com/openblack/openblack (file parsers under components/ or src/,
-> e.g. LNDFile, L3DFile, PackFile, ANMFile). RESEARCH-FILLED — see the
-> appended notes at the bottom of this file for the verified details and
-> open questions a loader author must resolve.
+> Verified 2026-07 by reading openblack's actual source
+> (github.com/openblack/openblack: components/lnd, components/pack,
+> components/l3d, src/3D) plus its wiki and the bw1-decomp original-symbol
+> structs. When anything below conflicts with reality, the openblack
+> parsers are the tiebreaker. **ANM (animations), SAD (audio), and the
+> definitive install-layout notes were NOT yet researched** (the research
+> agents hit a rate limit) — a follow-up pass must fill them from openblack's
+> ANMFile and audio loaders before Phases C/audio start.
 
-- **LND**: header + named blocks; per-cell altitude bytes with a global
-  altitude scale; 16x16-cell leaf blocks; country/material tables; embedded
-  terrain texture pages.
-- **G3D pack / L3D**: "LiOnHeAd" pack container of named blocks; MESHES
-  block = array of L3D; L3D header → submesh list → primitive groups →
-  vertex arrays (pos/uv/normal) + skin/bone tables; textures referenced by
-  id into the pack's texture blocks.
-- **ANM**: header + per-bone keyframe tracks (rot/pos), frame count + fps.
-- **SAD audio**: paired metadata/data blocks containing named samples
-  (PCM/ADPCM) — decode to 16-bit PCM for our mixer.
+### 7.1 LND landscape (`Data/Landscape/*.lnd`)
+
+Little-endian raw C-struct dump, no magic, no compression. Section order:
+**header (1052 B) → low-res texture records → (blockCount−1)×2520 B blocks →
+countries (×3076 B) → materials (×131074 B) → noise map (65536 B) → bump
+map (65536 B) → optional tail bytes** (preserve/ignore). Validate
+`blockSize==2520, materialSize==0x20002, countrySize==3076`.
+
+- **Header**: `u32 blockCount` @0 (stored records = blockCount−1 — block 0
+  = ocean, not stored); `u8 lookUpTable[1024]` @4 — a 32×32 grid,
+  `lookUpTable[blockX*32+blockZ]`, 0 = open sea, else 1-based index into
+  the stored blocks; `u32 materialCount` @1028, `countryCount` @1032, then
+  the three size fields and `lowResolutionCount` @1048.
+- **Low-res texture records** (skip them): 20 B header `{texture, material,
+  unknown, index, size}` + `(size−4)` bytes of DXT3 texels — the `size`
+  field INCLUDES itself. openblack never renders these.
+- **Block (2520 B)**: `LNDCell cells[17*17]` @0 (8 B each, indexed
+  `cells[cellX*17 + cellZ]`, 17×17 vertices of a 16×16-quad tile — resolve
+  edges via neighbour blocks, the 17th row/col is unreliable); `u32 index`
+  @2312 (1-based, matches lookUpTable); `f32 mapX,mapZ` @2316 (recompute as
+  blockX*160 instead of trusting); `u32 blockX,blockZ` @2324/2328; the rest
+  is runtime state, all zero on disk.
+- **Cell (8 B)**, confirmed by original symbols: `u8 r,g,b` (baked vertex
+  color, often 0), `u8 luminosity`, `u8 altitude` (**world Y = altitude ×
+  0.67**, unsigned — sea is faked by flags), `u8 saveColor`, `u8 properties`
+  (bits 0-3 = country index, 0x10 hasWater, 0x20 coastLine, 0x40 fullWater,
+  0x80 split), `u8 flags` (sound class). Water: hasWater/fullWater ⇒ land
+  alpha 0; coastLine ⇒ 0.5. **Split bit** picks the quad diagonal
+  (0: TL-BR, 1: BL-TR) — needed for exact ground sampling.
+- **Country (3076 B)**: `u32 type` + 256 × `{u32 mat0, u32 mat1, u32 coeff}`
+  — one entry per altitude 0-255; texture = mix(mat0, mat1, coeff/255),
+  perturbed by the noise map: `entry = (altitude + noise[cell]) % 256`.
+- **Material (131074 B)**: `u16 type` + 256×256 `u16` texels in **A1R5G5B5**.
+- **Noise then bump** (openblack's read order): two raw 256×256 R8 images.
+- **Conventions**: 1 cell = 10 world units, 1 block = 160, max island
+  5120×5120. Global cell (x,z ∈ [0,511]): `block = lut[(x>>4)*32+(z>>4)]`,
+  `cell = blocks[block-1].cells[(x&15)*17+(z&15)]`. openblack's height
+  lookup is nearest-cell; interpolate across the split triangles yourself.
+- **Our resample** (§3): B&W's 5120-unit, 0..170.85 m island → our 512-unit
+  grid: scale XZ by 0.1, choose a height scale that keeps beaches at our
+  y≈0-2 (start: `ourY = altitude*0.67*0.35 − seaOffset`, tune by eye), water
+  cells clamp below 0.
+
+### 7.2 G3D pack + L3D meshes (`Data/AllMeshes.g3d`)
+
+- **Pack container**: `char[8] "LiOnHeAd"`, then blocks to EOF:
+  `{char[32] name (NUL-padded), u32 bodySize}` + body. Mesh packs contain
+  many texture blocks (block name = lowercase hex of the texture id),
+  `INFO`, `MESHES`, and an ignorable low-res block.
+- **INFO**: `u32 numTextures` + `{u32 blockId, u32 unknown}` each.
+- **Texture block**: `{u32 size, u32 id, u32 type, u32 ddsSize}` + a DDS
+  file minus its 4-byte magic (124-byte DDS_HEADER + texels). DXT1/DXT3
+  (type 1/2). `id` is the key L3D materials reference via `skinID`.
+- **MESHES**: `"MKJC"`, `u32 meshCount`, meshCount × `u32 offset` (relative
+  to the MESHES body), L3D blobs packed tight. **Index = fixed MeshId** —
+  the vanilla 626-entry enum is openblack's `src/3D/AllMeshes.h`
+  (0=Dummy … 625=U_WashingLineTibetan); copy that enum into `BWMeshMap.h`.
+- **L3D blob**: 76 B header: `"L3D0"`, flags, size, submeshCount,
+  submeshOffsetsOffset, zeroed bbox, 0xFFFFFFFF, skinCount,
+  skinOffsetsOffset, extraDataCount/Offset, footprintDataOffset. Offsets
+  are ABSOLUTE within the blob; 0xFFFFFFFF = absent; v1.00 skin offsets
+  equal to fileSize ⇒ skip. Flag bits worth honoring: HasBones 0x100,
+  NoDraw 0x2000, ContainsLandscapeFeature 0x8000.
+- **Submesh** header 20 B `{flags, numPrimitives, primitivesOffset,
+  numBones, bonesOffset}`; primitivesOffset → a table of u32 offsets → each
+  a 48 B **primitive**: material `{u32 type, u8 alphaCutout, u8 cullMode,
+  u16 pad, u32 skinID, u32 colorBGRA}` + vertex/triangle/group/blend counts
+  & offsets. Submesh flags: draw only `status==0` (bits 4-9) and LOD bit 0;
+  skip `isPhysics` (bit 13). Material `skinID 0xFFFFFFFF` = untextured.
+- **Vertex 32 B**: float3 pos, float2 uv, float3 normal — maps 1:1 onto our
+  layout (color from texture bake in mode 1). **Triangles**: u16×3, indices
+  local to the primitive (re-base when merging). **Bones 60 B**: parent /
+  firstChild / rightSibling + 3×3 float rotation + float3 position,
+  parent-relative (row/col-major of the 9 floats: verify on a posed model).
+  **Vertex groups** `{u16 count, u16 boneIndex}` = run-length rigid skinning
+  (enough for §6 C1 part-chopping).
+- **Render gotchas**: D3D top-left UV origin ⇒ flip V for GL; openblack
+  culls CW-front-equivalent — verify winding on one known building and set
+  our importer to emit CCW; expand embedded 4444/1555 16-bit textures to
+  RGBA8 at load.
+
+### 7.3 Still to research (blocked on agent budget, not on design)
+
+- **ANM** animation tracks (openblack `ANMFile`) — needed for §6 C2 only.
+- **SAD** audio packs (openblack audio loaders) — needed for §8 sound swap.
+- Install-layout edge cases across retail/GOG patches, and community norms
+  documentation. The §1 layout above is believed-correct but unverified.
 
 ## 8. Delivery order & acceptance
 

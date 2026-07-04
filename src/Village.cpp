@@ -64,7 +64,7 @@ void Village::plan(World& world, std::uint32_t seed, glm::vec2 site,
     glm::vec2 p = xz(center) + dir * dist;
     b.pos = glm::vec3(p.x, terrain.heightAt(p.x, p.y), p.y);
     glm::vec2 toCenter = xz(center) - p;
-    b.yaw = std::atan2(toCenter.x, toCenter.y);  // face the center
+    b.yaw = noise::atan2det(toCenter.x, toCenter.y);  // face the center
     b.stage = stage;
     b.woodCost = woodCost;
     buildings.push_back(b);
@@ -170,10 +170,11 @@ void Village::step(World& world, float dt) {
       if (insideWonderAura(center)) decay *= tune::kWonderDecayFactor;
       decay -= static_cast<float>(countCompleted(BuildingType::Graveyard)) *
                tune::kGraveyardBeliefPerDay;
+      decay = std::max(0.0f, decay);  // sustain slows the fade, never reverses it
       decay += rot;
     }
     float floor = isOwner ? tune::kBeliefFloor : tune::kNeutralBeliefFloor;
-    belief[g] = std::max(floor, belief[g] - decay * dayFrac);
+    belief[g] = std::clamp(belief[g] - decay * dayFrac, floor, 1.0f);
   }
 
   for (FarmCell& c : farmCells) {
@@ -488,7 +489,11 @@ int Village::findHomeFor(int villagerIdx) {
   (void)villagerIdx;
   for (std::size_t b = 0; b < buildings.size(); ++b) {
     Building& h = buildings[b];
-    if (h.type == BuildingType::House && h.stage == 3 && h.residents < 4) {
+    if (h.stage != 3) continue;
+    int beds = h.type == BuildingType::House ? tune::kBedsSmallAbode
+               : h.type == BuildingType::LargeAbode ? tune::kBedsLargeAbode
+                                                    : 0;
+    if (beds > 0 && h.residents < beds) {
       ++h.residents;
       return static_cast<int>(b);
     }

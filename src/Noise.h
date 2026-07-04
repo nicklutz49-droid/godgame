@@ -8,6 +8,23 @@
 // whatever seed the player shares.
 namespace noise {
 
+// Deterministic atan2 for FOUNDING code (yaws written into world/map/save
+// state): fixed-order IEEE mul/add/div only, so results are bit-identical
+// across platforms - libm's atan2 is not. Max error ~3e-4 rad (invisible
+// for a facing). Same argument convention as std::atan2(y, x).
+inline float atan2det(float y, float x) {
+  float ax = x < 0.0f ? -x : x;
+  float ay = y < 0.0f ? -y : y;
+  float mx = ax > ay ? ax : ay;
+  float mn = ax > ay ? ay : ax;
+  float z = mx > 0.0f ? mn / mx : 0.0f;  // [0, 1]
+  float z2 = z * z;
+  float a = ((-0.0464964749f * z2 + 0.15931422f) * z2 - 0.327622764f) * z2 * z + z;
+  if (ay > ax) a = 1.57079637f - a;
+  if (x < 0.0f) a = 3.14159274f - a;
+  return y < 0.0f ? -a : a;
+}
+
 // Tiny deterministic RNG - the only random source the simulation may use.
 struct XorShift {
   std::uint32_t state;

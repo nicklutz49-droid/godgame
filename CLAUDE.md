@@ -92,9 +92,12 @@ for SDL2/glm when system packages are missing — don't add hard system deps.
 - World generation must stay deterministic per seed and identical across
   platforms: use `noise::*` (incl. `noise::XorShift`), never std::rand,
   std distributions, or time. Village founding avoids libm trig (hardcoded
-  direction tables). Villager runtime sim additionally must be deterministic
-  within a run: per-villager XorShift streams, index-ordered updates — the
-  headless checksum test enforces this.
+  direction tables), and any yaw that reaches world/map/save state is
+  computed with `noise::atan2det`, never `std::atan2` (libm differs across
+  platforms). Runtime steering may use std::atan2 (per-run determinism
+  only). Villager runtime sim additionally must be deterministic within a
+  run: per-villager XorShift streams, index-ordered updates — the headless
+  checksum test enforces this.
 - Sim-time quantities that should survive day-length changes (needs, crop
   growth, child growth) advance in day-fraction units; walking/working act in
   real seconds. Headless soaks shrink `DayCycle::secondsPerDay`.
