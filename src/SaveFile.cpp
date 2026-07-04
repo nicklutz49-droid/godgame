@@ -316,6 +316,7 @@ struct SaveIO {
     }
     for (int g = 0; g < tune::kMaxGods; ++g) {
       const GodAI& brain = world.ai[g];
+      w.u8(static_cast<std::uint8_t>(brain.profile));
       w.v3(brain.handPos);
       w.v3(brain.handVel);
       w.i32(brain.devotions);
@@ -397,6 +398,7 @@ struct SaveIO {
       GodAI& brain = world.ai[g];
       brain = GodAI{};
       brain.god = g;
+      brain.profile = std::min<int>(2, r.u8());
       brain.handPos = r.v3();
       brain.handVel = r.v3();
       brain.devotions = r.i32();

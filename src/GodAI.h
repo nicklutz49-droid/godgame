@@ -30,6 +30,7 @@ class GodAI {
   };
 
   int god = 1;
+  int profile = 1;  // index into tune::kAiProfiles (EASY/FAIR/CRUEL)
   glm::vec3 handPos{0.0f, 1.0e9f, 0.0f};
   glm::vec3 handVel{0.0f};  // smoothed; villagers judge the swoop by it
   Phase phase = Phase::Rest;

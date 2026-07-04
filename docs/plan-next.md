@@ -48,7 +48,13 @@ The load-bearing funnels (never bypass, always extend):
 
 ---
 
-## 1. M8 — balance & feel pass (the next milestone)
+## 1. M8 — balance & feel pass (SHIPPED 2026-07)
+
+> Landed: real-pace `--match` with SUMMARY lines, 8-seed sweeps (first
+> conversion day 2-4 median 3, zero stalled islands via the relaxed site
+> pass), EASY/FAIR/CRUEL `AiProfile` presets on the menu (save v2),
+> "acts or decay" ratified, collapse/conversion/cast juice, corpse-scan
+> hoist. Remaining ideas below stay valid for future passes.
 
 **Goal**: "fun on purpose." The systems all exist; make the 1v1 war paced,
 readable, and performant.

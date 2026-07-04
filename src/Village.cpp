@@ -148,21 +148,16 @@ void Village::spawnVillagers(World& world, std::uint32_t seed, int villageIdx,
   }
 }
 
-void Village::step(World& world, float dt) {
+void Village::step(World& world, float dt, float corpseRot) {
   if (!founded) return;
   float dayFrac = dt / world.dayCycle.secondsPerDay;
   float sun = 0.25f + 0.75f * world.dayCycle.daylight();  // crops rest at night
 
   // Faith fades unless a god stays present (worship counteracts this).
   // A Wonder slows the owner's fade; a tended Graveyard sustains it; a body
-  // left rotting near the village is an accusation against whoever reigns.
-  float rot = 0.0f;
-  for (const Prop& p : world.props) {
-    if (!p.alive || p.type != PropType::Body || p.carrier >= 0 || p.held) continue;
-    if (p.age > tune::kCorpseRotDays * world.dayCycle.secondsPerDay &&
-        glm::distance(xz(p.pos), xz(center)) < 60.0f)
-      rot += tune::kCorpseBeliefPerDay;
-  }
+  // left rotting near the village is an accusation against whoever reigns
+  // (tallied once for all villages by World::update).
+  float rot = corpseRot;
   for (int g = 0; g < tune::kMaxGods; ++g) {
     float decay = tune::kBeliefDecayPerDay;
     bool isOwner = g == owner;

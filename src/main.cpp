@@ -308,12 +308,20 @@ struct App {
   Mesh dispenserMesh, wonderMesh, scaffoldMesh;
   Mesh bodyMeshes[3];
 
-  // Short-lived cast feedback (expanding gold pulse at miracle points).
+  // Short-lived feedback effects (M8): miracle pulses, conversion light
+  // columns, collapse dust. Lifetime depends on the kind.
   struct CastEffect {
     glm::vec3 pos;
-    float age;
+    float age = 0.0f;
+    int kind = 0;  // 0 pulse, 1 column, 2 dust
+    glm::vec3 color{0.98f, 0.82f, 0.38f};
+    float life() const { return kind == 2 ? 2.2f : (kind == 1 ? 1.6f : 1.2f); }
   };
   std::vector<CastEffect> effects;
+  float shake = 0.0f;      // temple-collapse screen shake (decays)
+  float failFlash = 0.0f;  // red edge flash when a cast is refused
+  glm::vec3 nudgeTarget{0.0f};
+  float nudgeTimer = 0.0f;  // slow camera pull toward a ceremony
   std::vector<int> lastOwners;  // detects conversion ceremonies
   bool wasBroken[tune::kMaxGods] = {};  // detects defeat / victory
   bool rivalEnabled = true;             // --no-rival reverts to the sandbox
@@ -323,6 +331,7 @@ struct App {
   Shell shell = Shell::Title;
   int menuSel = 0;
   int menuMapChoice = 0;  // skirmish source: 0 = random island, 1..4 = map slot
+  int difficulty = 1;     // tune::kAiProfiles index for the NEXT skirmish
   int saveSlot = 1;       // saves/slot<N>.sav (F6 cycles in play)
   int endState = 0;       // 0 = war on, 1 = victory, 2 = defeat (latched)
   Mesh hudMesh, dimMesh;
@@ -772,6 +781,7 @@ std::vector<std::string> App::buildMenuRows() const {
     rows.push_back(menuMapChoice == 0
                        ? "SKIRMISH - MAP: RANDOM"
                        : "SKIRMISH - MAP: SLOT " + std::to_string(menuMapChoice));
+    rows.push_back(std::string("DIFFICULTY: ") + tune::kAiProfileNames[difficulty]);
     rows.push_back("SANDBOX");
     rows.push_back("EDITOR");
     rows.push_back("QUIT");
@@ -807,8 +817,11 @@ void App::activateMenuRow(int row) {
         SDL_Log("No map in slot %d", menuMapChoice);
         return;
       }
+      world.ai[1].profile = difficulty;
       endState = 0;
       shell = Shell::Playing;
+    } else if (r.rfind("DIFFICULTY", 0) == 0) {
+      difficulty = (difficulty + 1) % 3;
     } else if (r == "SANDBOX") {
       rivalEnabled = false;
       rebuildWorld(nextSeed());
@@ -852,7 +865,9 @@ void App::adjustMenuRow(int row, int dir) {
   std::vector<std::string> rows = buildMenuRows();
   if (row < 0 || row >= static_cast<int>(rows.size())) return;
   const std::string& r = rows[row];
-  if (shell == Shell::Title && r.rfind("SKIRMISH", 0) == 0) {
+  if (shell == Shell::Title && r.rfind("DIFFICULTY", 0) == 0) {
+    difficulty = (difficulty + 3 + dir) % 3;
+  } else if (shell == Shell::Title && r.rfind("SKIRMISH", 0) == 0) {
     // Cycle: random, then only the map slots that exist.
     for (int step = 0; step < 5; ++step) {
       menuMapChoice = (menuMapChoice + dir + 5) % 5;
@@ -1146,12 +1161,14 @@ void App::handleEvent(const SDL_Event& e) {
         case SDLK_m:
           if (!editor && hand.hasGround) {
             if (world.castFoodMiracle(hand.groundPoint)) {
-              effects.push_back({hand.groundPoint, 0.0f});
+              effects.push_back({hand.groundPoint});
               SDL_Log("food miracle! mana %.0f/%.0f", world.gods[0].mana,
                       world.gods[0].manaMax);
             } else if (!world.insideInfluence(hand.groundPoint)) {
+              failFlash = 0.5f;
               SDL_Log("cannot cast: outside your influence");
             } else {
+              failFlash = 0.5f;
               SDL_Log("cannot cast: need %.0f mana (have %.0f)",
                       tune::kFoodMiracleCost, world.gods[0].mana);
             }
@@ -1183,7 +1200,7 @@ void App::update(float dt) {
     clearFallenTempleRings();
     for (CastEffect& e : effects) e.age += dt;
     effects.erase(std::remove_if(effects.begin(), effects.end(),
-                                 [](const CastEffect& e) { return e.age > 1.2f; }),
+                                 [](const CastEffect& e) { return e.age > e.life(); }),
                   effects.end());
     wheelAccum = 0.0f;
     return;
@@ -1278,7 +1295,12 @@ void App::update(float dt) {
     for (std::size_t v = 0; v < world.villages.size(); ++v) {
       int owner = world.villages[v].owner;
       if (lastOwners[v] != -2 && lastOwners[v] != owner) {
-        effects.push_back({world.villages[v].center, 0.0f});
+        CastEffect column{world.villages[v].center};
+        column.kind = 1;
+        column.color = glm::mix(glm::vec3(1.0f), godColor(owner), 0.7f);
+        effects.push_back(column);
+        nudgeTarget = world.villages[v].center;
+        nudgeTimer = 0.8f;
         SDL_Log(owner == 0 ? "A village has joined your faith!"
                            : "A village has fallen to the rival god!");
       }
@@ -1289,6 +1311,18 @@ void App::update(float dt) {
     for (int g = 0; g < tune::kMaxGods; ++g) {
       bool broken = world.godBroken(g);
       if (broken && !wasBroken[g]) {
+        // The spectacle: dust blooms around the fallen temple, the eye shakes.
+        glm::vec3 at = world.gods[g].temple.pos;  // pos survives the collapse
+        for (int k = 0; k < 6; ++k) {
+          CastEffect dust{at + glm::vec3(static_cast<float>(k % 3) * 3.0f - 3.0f,
+                                         0.0f,
+                                         static_cast<float>(k / 3) * 4.0f - 2.0f)};
+          dust.kind = 2;
+          dust.age = -0.12f * static_cast<float>(k);  // stagger the blooms
+          dust.color = glm::vec3(0.55f, 0.50f, 0.42f);
+          effects.push_back(dust);
+        }
+        shake = 0.9f;
         if (g == 0) {
           SDL_Log("Your last village has fallen. The island forgets you...");
           if (endState == 0) endState = 2;
@@ -1299,11 +1333,19 @@ void App::update(float dt) {
       }
       wasBroken[g] = broken;
     }
+
+    // Feel: decay the shake/flash, ease the eye toward ceremonies.
+    shake = std::max(0.0f, shake - 1.1f * dt);
+    failFlash = std::max(0.0f, failFlash - 1.6f * dt);
+    if (nudgeTimer > 0.0f) {
+      nudgeTimer -= dt;
+      cam.focus += (nudgeTarget - cam.focus) * std::min(1.0f, 1.6f * dt) * 0.35f;
+    }
   }
 
   for (CastEffect& e : effects) e.age += dt;
   effects.erase(std::remove_if(effects.begin(), effects.end(),
-                               [](const CastEffect& e) { return e.age > 1.2f; }),
+                               [](const CastEffect& e) { return e.age > e.life(); }),
                 effects.end());
 }
 
@@ -1352,10 +1394,19 @@ void App::render(float time) {
   gl.Clear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
   float aspect = dh > 0 ? static_cast<float>(dw) / static_cast<float>(dh) : 1.0f;
+  // Temple-collapse shake: a decaying render-side jitter, the sim never knows.
+  glm::vec3 savedFocus = cam.focus;
+  if (shake > 0.0f) {
+    float a = shake * shake * 0.9f;
+    cam.focus += glm::vec3(std::sin(time * 47.0f) * a,
+                           std::sin(time * 31.0f) * a * 0.5f,
+                           std::cos(time * 39.0f) * a);
+  }
   glm::mat4 view = cam.view();
   glm::mat4 proj = cam.proj(aspect);
   glm::mat4 vp = proj * view;
   glm::vec3 camPos = cam.position();
+  cam.focus = savedFocus;
 
   sky.draw(glm::inverse(vp), camPos, sunDir, fogColor, day.zenithColor(), sunColor,
            night);
@@ -1797,12 +1848,36 @@ void App::render(float time) {
     }
   }
   for (const CastEffect& e : effects) {
-    float frac = e.age / 1.2f;
+    if (e.age < 0.0f) continue;  // staggered blooms wait their turn
+    float frac = std::min(1.0f, e.age / e.life());
     float y = world.terrain.heightAt(e.pos.x, e.pos.z) + 0.3f;
-    lit.set("uModel", glm::translate(glm::mat4(1.0f), glm::vec3(e.pos.x, y, e.pos.z)) *
-                          glm::scale(glm::mat4(1.0f), glm::vec3(2.0f + frac * 22.0f)));
-    lit.set("uAlpha", 0.55f * (1.0f - frac));
-    smokeDisc.draw();
+    lit.set("uTint", e.color);
+    if (e.kind == 1) {
+      // Conversion: a column of light rising from the totem.
+      for (int k = 0; k < 5; ++k) {
+        float ky = y + (static_cast<float>(k) * 2.6f + frac * 14.0f) * 0.8f;
+        float ks = (3.2f - 0.45f * static_cast<float>(k)) * (1.0f - 0.4f * frac);
+        lit.set("uModel",
+                glm::translate(glm::mat4(1.0f), glm::vec3(e.pos.x, ky, e.pos.z)) *
+                    glm::scale(glm::mat4(1.0f), glm::vec3(ks)));
+        lit.set("uAlpha", 0.5f * (1.0f - frac) * (1.0f - 0.12f * static_cast<float>(k)));
+        smokeDisc.draw();
+      }
+    } else if (e.kind == 2) {
+      // Collapse: slow dust blooming outward at the ground.
+      lit.set("uModel",
+              glm::translate(glm::mat4(1.0f), glm::vec3(e.pos.x, y + 0.6f, e.pos.z)) *
+                  glm::scale(glm::mat4(1.0f), glm::vec3(1.5f + frac * 13.0f)));
+      lit.set("uAlpha", 0.45f * (1.0f - frac));
+      smokeDisc.draw();
+    } else {
+      // Miracle pulse: the expanding ring of a successful cast.
+      lit.set("uModel",
+              glm::translate(glm::mat4(1.0f), glm::vec3(e.pos.x, y, e.pos.z)) *
+                  glm::scale(glm::mat4(1.0f), glm::vec3(2.0f + frac * 22.0f)));
+      lit.set("uAlpha", 0.55f * (1.0f - frac));
+      smokeDisc.draw();
+    }
   }
   lit.set("uTint", glm::vec3(1.0f));
 
@@ -1861,6 +1936,7 @@ void App::render(float time) {
   {
     MeshData hud;
     MeshData dim;
+    float dimAlpha = 0.55f;
     const float W = static_cast<float>(winW), H = static_cast<float>(winH);
     const glm::vec3 gold(1.0f, 0.88f, 0.45f), white(0.92f, 0.92f, 0.88f),
         grey(0.62f, 0.62f, 0.58f), crimson(0.95f, 0.35f, 0.30f);
@@ -1897,6 +1973,18 @@ void App::render(float time) {
         std::snprintf(line, sizeof line, "THE WAR: YOU %d  RIVAL %d  FREE %d",
                       mine, theirs, freev);
         font::addText(hud, line, 12.0f, 30.0f, 2.0f, white);
+      }
+      if (failFlash > 0.0f) {  // a refused cast stings red at the edges
+        dimAlpha = 0.30f * failFlash;
+        std::uint32_t base = dim.vertexCount();
+        glm::vec3 red(0.65f, 0.08f, 0.05f);
+        glm::vec3 n(0, 0, 1);
+        dim.addVertex(glm::vec3(0, 0, 0), n, red);
+        dim.addVertex(glm::vec3(W, 0, 0), n, red);
+        dim.addVertex(glm::vec3(W, H, 0), n, red);
+        dim.addVertex(glm::vec3(0, H, 0), n, red);
+        dim.addTriangle(base, base + 1, base + 2);
+        dim.addTriangle(base, base + 2, base + 3);
       }
       if (endState != 0) {
         const char* big =
@@ -1972,7 +2060,7 @@ void App::render(float time) {
       lit.set("uEmissive", 1.0f);
       lit.set("uFogDensity", 0.0f);
       if (!dim.vertices.empty()) {
-        lit.set("uAlpha", 0.55f);
+        lit.set("uAlpha", dimAlpha);
         dimMesh.upload(dim);
         dimMesh.draw();
       }
@@ -3352,6 +3440,72 @@ int runHeadless(std::uint32_t seed, int steps) {
     }
   }
 
+  // [17] The balance pass: difficulty profiles are real, persistent, and
+  // ordered; save v2 refuses v1; corpse pressure still reaches belief.
+  std::printf("[17] balance & difficulty\n");
+  {
+    const float dtb = 1.0f / 60.0f;
+    static_assert(tune::kAiProfiles[0].thinkPeriod > tune::kAiProfiles[1].thinkPeriod &&
+                      tune::kAiProfiles[1].thinkPeriod > tune::kAiProfiles[2].thinkPeriod,
+                  "EASY ponders longest, CRUEL shortest");
+
+    // CRUEL out-acts EASY over the same window, same world.
+    World we, wc;
+    we.generate(seed, 2);
+    wc.generate(seed, 2);
+    we.ai[1].profile = 0;
+    wc.ai[1].profile = 2;
+    we.dayCycle.t = wc.dayCycle.t = 0.40f;
+    we.dayCycle.secondsPerDay = wc.dayCycle.secondsPerDay = 240.0f;
+    for (int s = 0; s < 90 * 60; ++s) {
+      we.update(dtb);
+      wc.update(dtb);
+    }
+    auto acts = [](const World& w) {
+      const GodAI& b = w.ai[1];
+      return b.devotions + b.feeds + b.placements + b.combines + b.gifts +
+             b.courtCasts;
+    };
+    std::printf("      90 s of war: EASY %d acts, CRUEL %d acts\n", acts(we),
+                acts(wc));
+    check(acts(wc) > acts(we), "CRUEL out-acts EASY");
+
+    // Difficulty survives the save file (v2) and reset.
+    std::vector<std::uint8_t> sav;
+    savefile::save(wc, sav);
+    World wl;
+    check(savefile::load(wl, sav.data(), sav.size()) && wl.ai[1].profile == 2,
+          "difficulty survives the save file");
+    wl.ai[1].reset(wl, 1);
+    check(wl.ai[1].profile == 2, "and survives an AI reset");
+
+    // A v1 save (older version stamp) is refused.
+    std::vector<std::uint8_t> old = sav;
+    old[4] = 1;  // the little-endian version word follows the magic
+    check(!savefile::load(wl, old.data(), old.size()),
+          "an old save version is refused");
+
+    // The hoisted corpse pass still turns rot into belief pressure.
+    World wr;
+    wr.generate(seed);
+    Village& rv = wr.home();
+    Prop body;
+    body.type = PropType::Body;
+    body.radius = 0.6f;
+    body.pos = rv.center + glm::vec3(6.0f, 1.0f, 0.0f);
+    body.age = tune::kCorpseRotDays * wr.dayCycle.secondsPerDay + 5.0f;
+    body.asleep = true;
+    wr.spawnProp(body);
+    for (Villager& p : rv.villagers)
+      if (p.job == Job::Worshipper) p.job = Job::None;
+    rv.belief[0] = 0.5f;
+    float before = rv.belief[0];
+    wr.dayCycle.secondsPerDay = 240.0f;
+    for (int s = 0; s < 10 * 60; ++s) wr.update(dtb);
+    check(rv.belief[0] < before - 0.001f,
+          "a rotting corpse still drags belief down");
+  }
+
   // [6] Three-day economy & schedule soak. Days are shrunk to 240 s - short
   // enough to simulate fast, long enough that walking/chopping (real-time
   // actions) still fit inside a work day.
@@ -3449,7 +3603,8 @@ int runHeadless(std::uint32_t seed, int steps) {
 
 }  // namespace
 
-// AI-vs-AI skirmish, no window: both gods played by brains at 240 s days.
+// AI-vs-AI skirmish, no window: both gods played by brains at REAL day
+// length, so the numbers being tuned are the numbers the player feels.
 // The balance tool - watch the war unfold day by day, deterministically.
 int runMatch(std::uint32_t seed, int days) {
   World w;
@@ -3459,11 +3614,14 @@ int runMatch(std::uint32_t seed, int days) {
     return 1;
   }
   w.gods[0].ai = true;
-  w.dayCycle.secondsPerDay = 240.0f;
   const float dt = 1.0f / 60.0f;
-  const int stepsPerDay = static_cast<int>(240.0f / dt);
+  const int stepsPerDay = static_cast<int>(w.dayCycle.secondsPerDay / dt);
+  int firstConv = -1;
+  std::vector<int> owners0;
+  for (const Village& v : w.villages) owners0.push_back(v.owner);
 
-  std::printf("AI-vs-AI match | seed %u | %zu villages\n", seed, w.villages.size());
+  std::printf("AI-vs-AI match | seed %u | %zu villages | %d s days\n", seed,
+              w.villages.size(), static_cast<int>(w.dayCycle.secondsPerDay));
   for (int day = 1; day <= days; ++day) {
     for (int s = 0; s < stepsPerDay; ++s) w.update(dt);
     int owned[2] = {0, 0}, neutral = 0, pop = 0;
@@ -3491,12 +3649,24 @@ int runMatch(std::uint32_t seed, int days) {
                   v, vil.owner, vil.belief[0], vil.belief[1], vil.population(),
                   vil.food);
     }
+    if (firstConv < 0)
+      for (std::size_t v = 0; v < w.villages.size(); ++v)
+        if (w.villages[v].owner != owners0[v]) firstConv = day;
     if (w.godBroken(0) || w.godBroken(1)) {
       std::printf("%s\n", w.godBroken(0) ? "The crimson god has won."
                                          : "The gold god has won.");
       break;
     }
   }
+  int gold = 0, crimson = 0, neutral = 0;
+  for (const Village& v : w.villages) {
+    if (!v.founded) continue;
+    if (v.owner == 0) ++gold;
+    else if (v.owner == 1) ++crimson;
+    else ++neutral;
+  }
+  std::printf("SUMMARY seed=%u firstConv=%d gold=%d crimson=%d neutral=%d\n",
+              seed, firstConv, gold, crimson, neutral);
   std::printf("checksum %016llx\n",
               static_cast<unsigned long long>(worldChecksum(w)));
   return 0;

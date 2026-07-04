@@ -9,8 +9,9 @@ the building roster (docs/plan-scaffolds.md), mortality & burial, multi-
 village worlds with neutrals, gods & conversion (per-god belief + ownership
 ratchet), the rival AI god (docs/plan-rival.md), the map editor & .gmap files
 (docs/plan-editor.md), the skirmish shell — menus/HUD/game-saves/temple
-collapse (docs/plan-shell.md). Master arc: docs/plan-game.md (next: M8 the
-balance & feel pass).
+collapse (docs/plan-shell.md), the balance & feel pass (difficulty profiles,
+pacing sweeps). Master arc complete through M8: docs/plan-game.md; what
+remains is docs/plan-next.md (story mode, assets, extensions).
 
 Multi-village invariants: `World::villages[0]` is the player's home village;
 indices are stable for the session. Prop `claimedBy`/`carrier` store packed
@@ -57,6 +58,15 @@ props, `God::ruined`, temple un-founded); never break gods elsewhere. Menus,
 HUD, and the pixel font (Font.*) are render-side; the sim never knows the
 shell exists. Text is drawn with the lit shader at uEmissive=1, fog 0,
 through a pixel ortho — no new shaders, no textures.
+
+Balance invariants (M8): rival difficulty = `tune::kAiProfiles`
+(EASY/FAIR/CRUEL) indexed by `GodAI::profile` — cadence/appetite/boldness
+only, never cheats; profile survives `reset()` and rides in saves (v2).
+Pacing is tuned by `--match [days] --seed S` sweeps at REAL day length
+(SUMMARY line per run; target: first conversion day 3-5, no stalled
+islands — the relaxed second pass in `findVillageSites` guarantees
+contested ground). "Acts or decay" is ratified design: worship sustains
+mana, not belief; don't add belief-sustain without a new owner decision.
 
 ## Build & test
 

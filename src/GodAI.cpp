@@ -50,13 +50,16 @@ glm::vec3 findPlacementSpot(const World& world, const Village& v, int count,
 }  // namespace
 
 void GodAI::reset(const World& world, int godIdx) {
+  int keepProfile = profile;  // difficulty is a session choice, not AI state
   *this = GodAI{};
+  profile = keepProfile;
   god = godIdx;
   rng_ = world.seed() * 0x9E3779B9u +
          static_cast<std::uint32_t>(godIdx + 1) * 2654435761u;
   handPos = restPoint(world);
   // Stagger decisions so two AI gods never think on the same frame.
-  thinkTimer_ = tune::kAiThinkPeriod * (0.4f + 0.3f * static_cast<float>(godIdx));
+  thinkTimer_ = tune::kAiProfiles[profile].thinkPeriod *
+                (0.4f + 0.3f * static_cast<float>(godIdx));
 }
 
 glm::vec3 GodAI::restPoint(const World& world) const {
@@ -73,7 +76,7 @@ void GodAI::moveToward(World& world, const glm::vec3& dest, float dt) {
   if (handPos.y > 1.0e8f) handPos = dest;  // first placement, no flight
   glm::vec2 to = xz(dest) - xz(handPos);
   float d = glm::length(to);
-  float step = tune::kAiHandSpeed * dt;
+  float step = tune::kAiProfiles[profile].handSpeed * dt;
   glm::vec2 next = d <= step ? xz(dest) : xz(handPos) + to * (step / d);
   float ground = std::max(world.terrain.heightAt(next.x, next.y),
                           Terrain::WATER_LEVEL);
@@ -219,7 +222,7 @@ void GodAI::executeRelease(World& world) {
   held.clear();
   verb = Verb::None;
   phase = Phase::Rest;
-  cooldown_ = tune::kAiActCooldown;
+  cooldown_ = tune::kAiProfiles[profile].actCooldown;
 }
 
 void GodAI::settle(World& world) {
@@ -245,7 +248,7 @@ void GodAI::abandon(World& world) {
   held.clear();
   verb = Verb::None;
   phase = Phase::Rest;
-  cooldown_ = tune::kAiActCooldown;
+  cooldown_ = tune::kAiProfiles[profile].actCooldown;
 }
 
 void GodAI::update(World& world, float dt) {
@@ -267,7 +270,7 @@ void GodAI::update(World& world, float dt) {
     case Phase::Rest:
       moveToward(world, restPoint(world), dt);
       if (thinkTimer_ <= 0.0f) {
-        thinkTimer_ = tune::kAiThinkPeriod;
+        thinkTimer_ = tune::kAiProfiles[profile].thinkPeriod;
         if (cooldown_ <= 0.0f) think(world);
       }
       break;
@@ -290,7 +293,7 @@ void GodAI::update(World& world, float dt) {
         held.clear();
         verb = Verb::None;
         phase = Phase::Rest;
-        cooldown_ = tune::kAiActCooldown;
+        cooldown_ = tune::kAiProfiles[profile].actCooldown;
         break;
       }
       moveToward(world, pickup_, dt);
@@ -328,7 +331,7 @@ void GodAI::think(World& world) {
   for (std::size_t vi = 0; vi < world.villages.size(); ++vi) {
     Village& v = world.villages[vi];
     if (!v.founded || v.owner != god) continue;
-    if (v.food >= static_cast<int>(tune::kAiFoodReserve)) continue;
+    if (v.food >= static_cast<int>(tune::kAiProfiles[profile].foodReserve)) continue;
     bool affords = me.mana >= tune::kFoodMiracleCost;
     if (!affords) {
       for (const Building& b : v.buildings)
@@ -519,7 +522,7 @@ void GodAI::think(World& world) {
   if (courtV >= 0) {
     const Village& n = world.villages[courtV];
     if (world.insideInfluence(n.center, god) &&
-        me.mana >= tune::kFoodMiracleCost + tune::kAiManaReserve) {
+        me.mana >= tune::kFoodMiracleCost + tune::kAiProfiles[profile].manaReserve) {
       verb = Verb::Court;
       target_ = n.center;
       targetVillage_ = courtV;
@@ -535,7 +538,7 @@ void GodAI::think(World& world) {
   bool wealthy = me.mana > 0.85f * me.manaMax;
   if (courtV < 0 || wealthy) {
     XorShift r(rng_);
-    bool bold = r.uniform() < tune::kAiAggression;
+    bool bold = r.uniform() < tune::kAiProfiles[profile].aggression;
     rng_ = r.state;
     if (bold) {
       int enemyV = -1;

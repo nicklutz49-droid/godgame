@@ -78,6 +78,31 @@ std::vector<glm::vec2> World::findVillageSites(int count) const {
     if (clear) picked.push_back(c.pos);
   }
 
+  // Sparse islands starve the war of contested ground: a second, laxer
+  // quality pass (same separation) tops up the site list before giving up.
+  if (static_cast<int>(picked.size()) < count) {
+    std::vector<Candidate> lax;
+    for (float z = -lim; z <= lim; z += 8.0f) {
+      for (float x = -lim; x <= lim; x += 8.0f) {
+        float h = terrain.heightAt(x, z);
+        if (h < 2.0f || h > 16.0f) continue;
+        float flat = flatnessAt(x, z);
+        if (flat < 0.84f) continue;
+        lax.push_back({flat * 3.0f - std::abs(h - 5.0f) * 0.08f, {x, z}});
+      }
+    }
+    std::stable_sort(lax.begin(), lax.end(), [](const Candidate& a, const Candidate& b) {
+      return a.score > b.score;
+    });
+    for (const Candidate& c : lax) {
+      if (static_cast<int>(picked.size()) >= count) break;
+      bool clear = true;
+      for (const glm::vec2& p : picked)
+        if (glm::distance(p, c.pos) < tune::kVillageMinSeparation) clear = false;
+      if (clear) picked.push_back(c.pos);
+    }
+  }
+
   if (picked.empty()) {
     // Hostile island: take the least-bad cell; the caller terraforms hard.
     Candidate best{-1.0e9f, {0.0f, 0.0f}};
@@ -781,8 +806,22 @@ void World::update(float dt) {
     }
   }
 
-  for (Village& v : villages)
-    if (v.founded) v.step(*this, dt);
+  // One shared pass tallies rotting-body belief pressure per village
+  // (bodies are rare; villages used to each scan every prop).
+  corpseRot_.assign(villages.size(), 0.0f);
+  for (const Prop& p : props) {
+    if (!p.alive || p.type != PropType::Body || p.carrier >= 0 || p.held)
+      continue;
+    if (p.age <= tune::kCorpseRotDays * dayCycle.secondsPerDay) continue;
+    for (std::size_t v = 0; v < villages.size(); ++v)
+      if (villages[v].founded &&
+          glm::distance(glm::vec2(p.pos.x, p.pos.z),
+                        glm::vec2(villages[v].center.x, villages[v].center.z)) <
+              60.0f)
+        corpseRot_[v] += tune::kCorpseBeliefPerDay;
+  }
+  for (std::size_t v = 0; v < villages.size(); ++v)
+    if (villages[v].founded) villages[v].step(*this, dt, corpseRot_[v]);
   updateOwnership();
 }
 

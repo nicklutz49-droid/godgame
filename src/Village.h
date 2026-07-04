@@ -110,8 +110,10 @@ class Village {
                       int count = 0);
 
   // Per-frame settlement step: crop growth, construction stage advance,
-  // opening new sites, and the dawn tick (population growth).
-  void step(World& world, float dt);
+  // opening new sites, and the dawn tick (population growth). `corpseRot` is
+  // the rotting-body belief pressure World::update tallied for this village
+  // (one shared pass instead of every village scanning every prop).
+  void step(World& world, float dt, float corpseRot = 0.0f);
 
   // Drop-to-assign: what job does a gentle placement at p mean?
   // Priority: construction site > field > tree > water/shore. Job::None = no change.

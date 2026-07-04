@@ -10,7 +10,27 @@ screen is procedural placeholder art. There is no creature, by design.
 ![The temple](docs/temple.png)
 ![The island](docs/island.png)
 
-## Current slice: the skirmish shell
+## Current slice: the balance & feel pass
+
+The war is paced on purpose now (decisions locked with the owner; data from
+`--match` sweeps at real day length):
+
+- **Deliberate pacing**: across an 8-seed sweep the first village falls on
+  day 2-4 (median 3) and every island now carries contested ground - a
+  relaxed second site-scan pass tops up sparse islands so no skirmish is a
+  stalled duel. Gift persuasion eased (0.06/0.04 awe) to match.
+- **Difficulty presets**: EASY / FAIR / CRUEL on the title menu - the same
+  honest brain at different tempo, appetite, and boldness (`tune::kAiProfiles`).
+  Difficulty rides in the save file (v2). Headless-proven: CRUEL out-acts
+  EASY on identical worlds.
+- **"Acts or decay" ratified**: worship makes mana; only your visible acts
+  hold belief high. The sag toward the floor is the design.
+- **Juice**: temple collapses bloom dust and shake the eye; conversions
+  raise a light column in the new owner's color and ease the camera toward
+  the ceremony; refused casts sting red at the screen edges.
+- **Perf**: the per-village corpse scan hoisted to one shared pass.
+
+## Previous slice: the skirmish shell
 
 It's a game you launch and finish now (design:
 [docs/plan-shell.md](docs/plan-shell.md)):
@@ -319,7 +339,8 @@ in [docs/plan-game.md](docs/plan-game.md). The short version:
 5. ✅ The rival AI god (fully symmetric, an embodied enemy hand)
 6. ✅ In-game map editor (sculpt, plant, found, save/load .gmap)
 7. ✅ Skirmish shell (menus, game saves, the collapse, the HUD)
-8. Balance & feel pass ← next — then story mode
+8. ✅ Balance & feel pass (pacing sweeps, difficulty presets, juice)
+   — next: story mode, or wire in original assets (docs/plan-assets.md)
 
 Also on the list: more miracles, original B&W asset loaders, sound.
 

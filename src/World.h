@@ -217,6 +217,7 @@ class World {
   std::uint32_t seed_ = 1;
   std::uint32_t miracleCounter_ = 0;
   std::uint32_t editStroke_ = 0;  // seeds the paint brushes' determinism
+  std::vector<float> corpseRot_;  // per-village scratch, refilled each update
 
   friend struct SaveIO;  // full-state game saves restore privates (M7)
 };
