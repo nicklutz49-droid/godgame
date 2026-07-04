@@ -1,0 +1,72 @@
+GODGAME - how to play
+=====================
+
+A Black & White inspired god game. You are a hand in the sky; your village
+worships you into power, and a rival god wants the island for itself.
+
+STARTING
+  Run godgame (godgame.exe on Windows). The title menu offers:
+    CONTINUE            resume your newest save
+    SKIRMISH            you vs the rival god (map: random island or an
+                        authored map slot; difficulty: EASY / FAIR / CRUEL)
+    SANDBOX             a peaceful island, no opponent
+    EDITOR              sculpt your own island and save it as a map
+    QUIT
+  Arrows + Enter, or the mouse. Esc during play opens the pause menu
+  (resume / save / load / volume / main menu / quit).
+
+THE LOOP
+  Villagers gather food and wood on their own. Drop a villager onto the
+  totem to make a Worshipper - worship fills your MANA. Cast miracles
+  (1-4 selects FOOD/RAIN/FOREST/FIREBALL, M casts; rain and forest need
+  a Miracle Dispenser, fireball needs the Wonder) to feed, grow, and
+  terrify. Belief grows when villagers WITNESS your acts, and belief is
+  territory: your influence rings only reach where faith does.
+  Win a neutral village by impressing it past 50% belief; win the war by
+  taking every village the rival owns - its temple will fall.
+
+THE HAND
+  Left-drag ground        pan (grab the land)
+  Left-drag a thing       pick up rock / tree / log / food / scaffold /
+                          VILLAGER (they panic; that's belief too)
+  release gently          set down. On trees/field/water/site = assign job;
+                          on the totem = devote a Worshipper; scaffold on
+                          scaffold = combine; scaffold on ground = build
+  release while moving    throw (gifts hurled into a neutral village win
+                          hearts when they land)
+  Right/middle-drag       rotate & tilt camera
+  Wheel                   zoom (holding a 3-stack: choose civic building)
+  WASD / arrows, Q E      move / rotate camera (Shift = faster)
+  1 2 3 4                 select miracle (food/rain/forest/fireball)
+  M                       cast the selected miracle at the cursor
+
+BUILDING
+  Workshops turn wood into scaffolds. Combine stacks by gentle placement:
+    1 Small Abode   2 Large Abode   3 civic (Store/Workshop/Creche/Graveyard)
+    4 Field         5 Village Center upgrade   6 Miracle Dispenser   7 Wonder
+
+KEYS
+  F5 / F9 / F6    quick-save / quick-load / cycle save slot (in play)
+  Tab             map editor (frozen time; 1-9 tools, [ ] brush size,
+                  G owner, V village size, N blank island, L original
+                  island as clay, F5/F9/F6 map slots)
+  T               advance time of day        R   new random island
+  F7              toggle sun shadows         F2  wireframe
+  F8              original B&W meshes <-> placeholders (with --bw)
+  F3 / F4         debug tint / sim speed     K / L  spawn villager / +10 res
+
+COMMAND LINE
+  godgame --seed 1234         a specific island
+  godgame --map file.gmap     play an authored map
+  godgame --load file.sav     resume a save
+  godgame --no-rival          sandbox      --editor   boot into the editor
+  godgame --match [days]      headless AI-vs-AI war report
+  godgame --headless          run the self-test suite
+  godgame --bw <dir>          wear your own Black & White install: original
+                              islands (menu MAP: LAND 1-5 or --land N) and
+                              original buildings/trees/rocks. Read at
+                              runtime, nothing extracted or shipped.
+  godgame --bw <dir> --bw-report   check the install, print an inventory
+
+Personal project. Without --bw everything on screen is procedural
+placeholder art; with it, the originals stay your own local overlay.

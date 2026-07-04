@@ -1,5 +1,8 @@
 build/
 build-*/
+dist/
+maps/
+saves/
 out/
 .cache/
 compile_commands.json

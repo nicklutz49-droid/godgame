@@ -72,6 +72,10 @@ void Shader::set(const char* name, const glm::vec3& v) const {
 void Shader::set(const char* name, const glm::vec4& v) const {
   gl.Uniform4f(gl.GetUniformLocation(program_, name), v.x, v.y, v.z, v.w);
 }
+void Shader::set(const char* name, const glm::vec3* v, int count) const {
+  gl.Uniform3fv(gl.GetUniformLocation(program_, name), count,
+                reinterpret_cast<const GLfloat*>(v));
+}
 void Shader::set(const char* name, const glm::mat4& m) const {
   gl.UniformMatrix4fv(gl.GetUniformLocation(program_, name), 1, GL_FALSE,
                       glm::value_ptr(m));

@@ -34,19 +34,31 @@ in vec3 vWorld;
 in vec3 vNormal;
 uniform vec3 uCamPos;
 uniform vec3 uSunDir;
+uniform vec3 uSunColor;
 uniform vec3 uFogColor;
 uniform float uFogDensity;
+uniform float uTime;
 out vec4 FragColor;
 void main() {
   vec3 n = normalize(vNormal);
   vec3 v = normalize(uCamPos - vWorld);
   float fresnel = pow(1.0 - max(dot(v, n), 0.0), 3.0);
 
-  vec3 deep = vec3(0.07, 0.29, 0.42);
+  // The deep-water color follows the sky so night oceans go dark.
+  vec3 deep = vec3(0.07, 0.29, 0.42) * clamp(uFogColor / vec3(0.74, 0.82, 0.88), 0.05, 1.2);
   vec3 col = mix(deep, uFogColor * 0.9, fresnel * 0.7);
 
-  float spec = pow(max(dot(reflect(-uSunDir, n), v), 0.0), 120.0) * 0.8;
-  col += vec3(spec);
+  // Sun glitter: fine ripples perturb the normal so the glint band breaks
+  // into moving sparkles; strongest at low sun, gone at night.
+  vec3 gn = normalize(n + vec3(sin(vWorld.x * 1.7 + uTime * 2.3) *
+                                   sin(vWorld.z * 2.1 - uTime * 1.9) * 0.20,
+                               0.0,
+                               sin(vWorld.z * 1.9 + uTime * 2.7) *
+                                   sin(vWorld.x * 2.3 + uTime * 1.7) * 0.20));
+  float spec = pow(max(dot(reflect(-uSunDir, n), v), 0.0), 120.0) * 0.55;
+  float glitter = pow(max(dot(reflect(-uSunDir, gn), v), 0.0), 420.0) * 1.6;
+  float sunUp = clamp(uSunDir.y * 3.0, 0.0, 1.0);
+  col += uSunColor * (spec + glitter) * sunUp;
 
   float dist = length(uCamPos - vWorld);
   float fog = 1.0 - exp(-uFogDensity * dist);
@@ -87,13 +99,14 @@ void Water::init() {
 }
 
 void Water::draw(const glm::mat4& viewProj, const glm::vec3& camPos,
-                 const glm::vec3& sunDir, const glm::vec3& fogColor,
-                 float fogDensity, float time) {
+                 const glm::vec3& sunDir, const glm::vec3& sunColor,
+                 const glm::vec3& fogColor, float fogDensity, float time) {
   shader_.use();
   shader_.set("uVP", viewProj);
   shader_.set("uTime", time);
   shader_.set("uCamPos", camPos);
   shader_.set("uSunDir", sunDir);
+  shader_.set("uSunColor", sunColor);
   shader_.set("uFogColor", fogColor);
   shader_.set("uFogDensity", fogDensity);
 

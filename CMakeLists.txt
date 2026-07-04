@@ -47,6 +47,19 @@ add_executable(godgame
   src/Camera.cpp
   src/World.cpp
   src/Hand.cpp
+  src/Physics.cpp
+  src/Village.cpp
+  src/Villagers.cpp
+  src/GodAI.cpp
+  src/MapFile.cpp
+  src/SaveFile.cpp
+  src/Font.cpp
+  src/Models.cpp
+  src/Sound.cpp
+  src/bw/BWPack.cpp
+  src/bw/BWLand.cpp
+  src/bw/BWMesh.cpp
+  src/bw/BWAssets.cpp
 )
 
 # We call SDL_SetMainReady() ourselves and use a plain main().

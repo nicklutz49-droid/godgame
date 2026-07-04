@@ -22,19 +22,28 @@ const char* kFragmentSrc = R"GLSL(
 in vec3 vDir;
 uniform vec3 uSunDir;
 uniform vec3 uFogColor;
+uniform vec3 uZenith;
+uniform vec3 uSunColor;
+uniform float uNight;
 out vec4 FragColor;
 void main() {
   vec3 d = normalize(vDir);
-  vec3 zenith = vec3(0.28, 0.50, 0.76);
   vec3 col;
   if (d.y >= 0.0) {
-    col = mix(uFogColor, zenith, smoothstep(0.0, 0.45, d.y));
+    col = mix(uFogColor, uZenith, smoothstep(0.0, 0.45, d.y));
   } else {
     // Below the horizon: match the fog exactly so far-clipped water blends in.
     col = uFogColor;
   }
   float s = max(dot(d, uSunDir), 0.0);
-  col += vec3(1.0, 0.92, 0.72) * (pow(s, 400.0) * 1.2 + pow(s, 16.0) * 0.12);
+  col += uSunColor * (pow(s, 400.0) * 1.3 + pow(s, 16.0) * 0.14);
+  // Stars after dark: sparse hash-lit cells, fading near the horizon.
+  if (uNight > 0.01 && d.y > 0.0) {
+    vec3 g = floor(d * 90.0);
+    float h = fract(sin(dot(g, vec3(12.9898, 78.233, 45.164))) * 43758.5453);
+    float star = smoothstep(0.9962, 0.9990, h);
+    col += vec3(0.85, 0.90, 1.0) * star * uNight * smoothstep(0.0, 0.15, d.y);
+  }
   FragColor = vec4(col, 1.0);
 }
 )GLSL";
@@ -54,12 +63,17 @@ void Sky::init() {
 }
 
 void Sky::draw(const glm::mat4& invViewProj, const glm::vec3& camPos,
-               const glm::vec3& sunDir, const glm::vec3& fogColor) {
+               const glm::vec3& sunDir, const glm::vec3& fogColor,
+               const glm::vec3& zenithColor, const glm::vec3& sunColor,
+               float night) {
   shader_.use();
   shader_.set("uInvVP", invViewProj);
   shader_.set("uCamPos", camPos);
   shader_.set("uSunDir", sunDir);
   shader_.set("uFogColor", fogColor);
+  shader_.set("uZenith", zenithColor);
+  shader_.set("uSunColor", sunColor);
+  shader_.set("uNight", night);
 
   gl.Disable(GL_DEPTH_TEST);
   gl.DepthMask(GL_FALSE);

@@ -45,6 +45,115 @@ void Terrain::generate(std::uint32_t seed) {
   }
 }
 
+void Terrain::generateBlank(std::uint32_t seed) {
+  seed_ = seed;
+  heights_.assign((GRID + 1) * (GRID + 1), SEABED);
+  for (int j = 0; j <= GRID; ++j) {
+    for (int i = 0; i <= GRID; ++i) {
+      float x = -SIZE * 0.5f + SIZE * static_cast<float>(i) / GRID;
+      float z = -SIZE * 0.5f + SIZE * static_cast<float>(j) / GRID;
+      float d = std::sqrt(x * x + z * z) / (SIZE * 0.42f);
+      // A flat 5 m plateau with a beach shoulder easing into the sea.
+      float island = 1.0f - smoothstep(0.55f, 0.95f, d);
+      heights_[j * (GRID + 1) + i] = SEABED + island * (5.0f - SEABED);
+    }
+  }
+  refreshStats();
+}
+
+void Terrain::raiseDisc(float cx, float cz, float radius, float amount) {
+  if (heights_.empty() || radius <= 0.0f) return;
+  int i0, i1, j0, j1;
+  discCells(cx, cz, radius, i0, i1, j0, j1);
+  for (int j = j0; j <= j1; ++j) {
+    for (int i = i0; i <= i1; ++i) {
+      float x = -SIZE * 0.5f + SIZE * static_cast<float>(i) / GRID;
+      float z = -SIZE * 0.5f + SIZE * static_cast<float>(j) / GRID;
+      float d = std::sqrt((x - cx) * (x - cx) + (z - cz) * (z - cz)) / radius;
+      if (d >= 1.0f) continue;
+      float w = 1.0f - smoothstep(0.35f, 1.0f, d);
+      heights_[j * (GRID + 1) + i] += amount * w;
+    }
+  }
+  refreshStats();
+}
+
+void Terrain::smoothDisc(float cx, float cz, float radius, float strength) {
+  if (heights_.empty() || radius <= 0.0f) return;
+  int i0, i1, j0, j1;
+  discCells(cx, cz, radius, i0, i1, j0, j1);
+  // Blend toward the 4-neighbor average, sampled from a copy of the touched
+  // band so the pass order cannot bias the result.
+  std::vector<float> before(heights_);
+  auto at = [&](int i, int j) {
+    return before[std::clamp(j, 0, GRID) * (GRID + 1) + std::clamp(i, 0, GRID)];
+  };
+  for (int j = j0; j <= j1; ++j) {
+    for (int i = i0; i <= i1; ++i) {
+      float x = -SIZE * 0.5f + SIZE * static_cast<float>(i) / GRID;
+      float z = -SIZE * 0.5f + SIZE * static_cast<float>(j) / GRID;
+      float d = std::sqrt((x - cx) * (x - cx) + (z - cz) * (z - cz)) / radius;
+      if (d >= 1.0f) continue;
+      float w = (1.0f - smoothstep(0.35f, 1.0f, d)) * std::min(1.0f, strength);
+      float avg = (at(i - 1, j) + at(i + 1, j) + at(i, j - 1) + at(i, j + 1)) * 0.25f;
+      float& h = heights_[j * (GRID + 1) + i];
+      h += (avg - h) * w;
+    }
+  }
+  refreshStats();
+}
+
+bool Terrain::setHeights(const std::vector<float>& h, std::uint32_t seed) {
+  if (h.size() != static_cast<std::size_t>((GRID + 1) * (GRID + 1))) return false;
+  heights_ = h;
+  seed_ = seed;
+  refreshStats();
+  return true;
+}
+
+void Terrain::refreshStats() {
+  minH_ = 1e9f;
+  maxH_ = -1e9f;
+  for (float h : heights_) {
+    minH_ = std::min(minH_, h);
+    maxH_ = std::max(maxH_, h);
+  }
+}
+
+void Terrain::discCells(float cx, float cz, float radius, int& i0, int& i1,
+                        int& j0, int& j1) const {
+  auto toCell = [](float v) {
+    return (v + SIZE * 0.5f) / SIZE * GRID;
+  };
+  i0 = std::clamp(static_cast<int>(std::floor(toCell(cx - radius))), 0, GRID);
+  i1 = std::clamp(static_cast<int>(std::ceil(toCell(cx + radius))), 0, GRID);
+  j0 = std::clamp(static_cast<int>(std::floor(toCell(cz - radius))), 0, GRID);
+  j1 = std::clamp(static_cast<int>(std::ceil(toCell(cz + radius))), 0, GRID);
+}
+
+void Terrain::flattenDisc(float cx, float cz, float radius, float targetH,
+                          float strength) {
+  if (heights_.empty()) return;
+  minH_ = 1e9f;
+  maxH_ = -1e9f;
+  for (int j = 0; j <= GRID; ++j) {
+    for (int i = 0; i <= GRID; ++i) {
+      float x = -SIZE * 0.5f + SIZE * static_cast<float>(i) / GRID;
+      float z = -SIZE * 0.5f + SIZE * static_cast<float>(j) / GRID;
+      float d = std::sqrt((x - cx) * (x - cx) + (z - cz) * (z - cz)) / radius;
+      if (d < 1.0f) {
+        // Full flattening over the inner half, smooth shoulder to the rim.
+        float w = 1.0f - smoothstep(0.5f, 1.0f, d);
+        float& h = heights_[j * (GRID + 1) + i];
+        h += (targetH - h) * w * strength;
+      }
+      float h = heights_[j * (GRID + 1) + i];
+      minH_ = std::min(minH_, h);
+      maxH_ = std::max(maxH_, h);
+    }
+  }
+}
+
 float Terrain::vertexHeight(int i, int j) const {
   i = std::clamp(i, 0, GRID);
   j = std::clamp(j, 0, GRID);
@@ -131,6 +240,16 @@ MeshData Terrain::buildMeshData() const {
       float h = vertexHeight(i, j);
       glm::vec3 n = normalAt(x, z);
 
+      // Baked ambient occlusion: vertices below their neighbourhood average
+      // sit in a crease and darken; ridges pick up a whisper of extra light.
+      float nb = 0.0f;
+      nb += vertexHeight(i - 2, j) + vertexHeight(i + 2, j);
+      nb += vertexHeight(i, j - 2) + vertexHeight(i, j + 2);
+      nb += vertexHeight(i - 1, j - 1) + vertexHeight(i + 1, j - 1);
+      nb += vertexHeight(i - 1, j + 1) + vertexHeight(i + 1, j + 1);
+      float concave = nb * 0.125f - h;  // >0 = below the neighbourhood
+      float ao = 1.0f - std::clamp(concave * 0.10f, -0.05f, 0.22f);
+
       // Painterly height/slope palette: seabed, sand, grass, rock, snow.
       float variation = noise::fbm(x * 0.05f, z * 0.05f, 3, seed_ + 5u) - 0.5f;
       glm::vec3 seabed(0.42f, 0.40f, 0.30f);
@@ -146,6 +265,7 @@ MeshData Terrain::buildMeshData() const {
       c = glm::mix(c, snow, smoothstep(43.0f, 49.0f, h + variation * 4.0f));
       // Steep slopes read as exposed rock regardless of altitude.
       c = glm::mix(rock * (0.9f + variation * 0.3f), c, smoothstep(0.42f, 0.60f, n.y));
+      c *= ao;
 
       md.addVertex(glm::vec3(x, h, z), n, c);
     }

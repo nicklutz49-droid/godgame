@@ -5,91 +5,485 @@ Personal project — the code is an original recreation, and original game asset
 (from a personally owned copy) may be wired in later. Everything currently on
 screen is procedural placeholder art. There is no creature, by design.
 
+![The village](docs/village.png)
+![The village at night](docs/night.png)
+![The temple](docs/temple.png)
 ![The island](docs/island.png)
-![Forest close-up](docs/forest.png)
 
-## Current slice: land, camera, hand
+## Current slice: the island finds its voice
 
+Sound, all of it synthesized at startup — no audio files, no new
+dependencies (design: [docs/plan-sound.md](docs/plan-sound.md)):
+
+- **The world sounds like itself** — thuds scale with the fall, the sea
+  splashes, axes bite and trunks come down, scaffolds clack, finished
+  buildings chime, grabbed villagers scream (flung ones too), casts
+  sparkle, explosions boom, conversions ring a bell (the rival's tolls
+  lower), collapsing temples rumble. Everything positional around the
+  camera ear.
+- **The hours have beds** — wind always, birdsong by day, crickets by
+  night, campfire crackle swelling as you drift near, a rain hiss under
+  every M11 shower, and the worship chant rising with the dancers: the
+  mana engine, audible.
+- **Silence is a feature** — the sim never touches the audio layer (it
+  speaks through the same `World::events` seam the visuals use);
+  `--headless` never opens a device; machines without audio log one line
+  and play on identically. The synth bank is deterministic and the suite
+  proves it (260 checks now).
+- Volume lives in the pause menu (`VOLUME: 80%`, arrows adjust). Music
+  stays reserved for the original-soundtrack overlay later.
+
+## Previous slice: the miracle book
+
+Food has company (design: [docs/plan-miracles.md](docs/plan-miracles.md)):
+
+![The miracle book](docs/miracles.png)
+
+- **Four spells, four keys** — `1` FOOD, `2` RAIN, `3` FOREST, `4`
+  FIREBALL; `M` casts the selected page at the cursor, the HUD shows its
+  name, cost, and what still locks it.
+- **Rain (40)** — a cloud over the fields for 45 s: crops under it grow at
+  triple rate even in the dark. **Forest (50)** — up to seven trees take
+  root across the circle. Both unlock with a completed Miracle Dispenser.
+- **Fireball (70)** — unlocked by the Wonder: a comet that flings whatever
+  it finds (villager deaths still only ever happen through the landing
+  seam), scorches trees to stumps, and buys terror-belief with a huge fear
+  pulse. Casting is still influence-bound — reach is faith.
+- **The rival reads the same book** — it rains on its own dry fields at
+  every difficulty (once it builds a dispenser), and on CRUEL it answers a
+  built Wonder with fireballs at whichever of your villages its ring
+  reaches. Difficulty still never cheats.
+- New sim state (clouds, comets in flight) rides the checksum and game
+  saves (v3), stays lockstep through save/load, and pacing holds: 7 of 8
+  sweep seeds still convert in days 2-5 (seed 5 became a long siege -
+  watched, tolerated).
+
+## Previous slice: the original-asset overlay
+
+The game can now wear a personally owned Black & White (2001) installation
+at runtime (design: [docs/plan-assets.md](docs/plan-assets.md)):
+
+```sh
+godgame --bw ~/BlackWhite --bw-report   # validate the install, print an inventory
+godgame --bw ~/BlackWhite --land 1      # play on an original island
+godgame --bw ~/BlackWhite               # menu: SKIRMISH - MAP: LAND 1..5
+```
+
+- **Original islands** — `Data/Landscape/Land1..5.lnd` parse into the real
+  heightfields (split-diagonal exact, waterline self-calibrated from the
+  coastline cells) and resample onto our terrain; the standard founding
+  scan then places villages on the real ground. Heights are data, so
+  determinism, maps, and saves are untouched. In the editor, `L` pulls a
+  land in as sculpting clay.
+- **Original models** — `Data/AllMeshes.g3d` dresses the world: the Celtic
+  building set, oaks and cedars and conifers, limestone rocks, scaffolds,
+  campfires, grain piles. L3D meshes bake their DXT textures into
+  per-vertex color at load, so they ride the existing one-shader pipeline
+  (tints, ghosts, fog, shadows) with zero renderer changes. `F8` flips
+  between originals and placeholders live.
+- **Nothing ships** — assets are read from your own install into process
+  memory; nothing is extracted, converted, or committed. Without `--bw`
+  (or with a slot the pack can't fill) every placeholder stays, pixel-
+  identical to the previous slice. The self-test suite proves the loaders
+  on synthetic fixtures built byte-by-byte in the test - it never needs
+  the game files.
+
+## Previous slice: light & shadow
+
+The island learned about the sun (design:
+[docs/plan-shading.md](docs/plan-shading.md)):
+
+![Dawn](docs/dawn.png)
+
+- **Real shadows** — the world renders a depth map from the sun every
+  frame: houses stretch long shadows at dawn, mountains flood their valleys
+  at dusk, trees dapple the ground. PCF-softened, texel-snapped (no
+  shimmer), fading in with sun height. Villagers and loose props keep their
+  soft blob discs so crowds stay readable. `F7` toggles the whole pass for
+  weak machines (llvmpipe: ~45 ms with, ~23 ms without at village view).
+- **Night is lit by fire** — up to six point lights: campfires flicker warm
+  pools onto the villagers gathered around them, temple beacons glow in
+  their god's color across the dark.
+- **Atmosphere** — sun-glitter sparkles across the waves and follows the
+  time of day; terrain ambient occlusion is baked into the mesh (gullies
+  and creases read deep); villagers drop to silhouettes beyond 180 m and
+  keep their thought bubbles to themselves past 140 m.
+- Still GL 3.3 core, still procedural, still one lit shader (plus a
+  two-line depth shader) — no textures, no extensions.
+
+## Previous slice: the balance & feel pass
+
+The war is paced on purpose now (decisions locked with the owner; data from
+`--match` sweeps at real day length):
+
+- **Deliberate pacing**: across an 8-seed sweep the first village falls on
+  day 2-4 (median 3) and every island now carries contested ground - a
+  relaxed second site-scan pass tops up sparse islands so no skirmish is a
+  stalled duel. Gift persuasion eased (0.06/0.04 awe) to match.
+- **Difficulty presets**: EASY / FAIR / CRUEL on the title menu - the same
+  honest brain at different tempo, appetite, and boldness (`tune::kAiProfiles`).
+  Difficulty rides in the save file (v2). Headless-proven: CRUEL out-acts
+  EASY on identical worlds.
+- **"Acts or decay" ratified**: worship makes mana; only your visible acts
+  hold belief high. The sag toward the floor is the design.
+- **Juice**: temple collapses bloom dust and shake the eye; conversions
+  raise a light column in the new owner's color and ease the camera toward
+  the ceremony; refused casts sting red at the screen edges.
+- **Perf**: the per-village corpse scan hoisted to one shared pass.
+
+## Previous slice: the skirmish shell
+
+It's a game you launch and finish now (design:
+[docs/plan-shell.md](docs/plan-shell.md)):
+
+![The title menu](docs/menu.png)
+
+- **A menu in front of a living island** — the title screen orbits an
+  ambient skirmish while you choose: CONTINUE (newest save), SKIRMISH (random
+  island or any of your `maps/` slots), SANDBOX, EDITOR, QUIT. Arrows +
+  enter, or the mouse. `Esc` in play pauses into the same shell — quitting
+  is a menu act now.
+- **Full game saves** — `F5`/`F9` quick-save/load `saves/slot<N>.sav`
+  (`F6` cycles slots), `--load file.sav` from the CLI. Unlike a `.gmap`
+  (a starting condition), a save is the *complete* mid-game state — every
+  prop, villager, counter, god, and AI brain, private rng streams included.
+  The headless suite proves a loaded game **continues bit-for-bit like the
+  original** and that save → load → save is byte-identical. The camera
+  comes back where you left it.
+- **The war ends properly** — when a god's last village converts away, its
+  temple physically crumbles into flung rubble (grabbable wreckage, of
+  course), the island quakes, and a victory or defeat card rises. Time keeps
+  flowing afterward: stay as long as you like.
+- **The first HUD** — a tiny built-in 5×7 pixel font (procedural glyph
+  quads, no textures) draws the god's ledger (mana, population, stores,
+  belief, day) and the war line (villages held). The same font writes the
+  menus and the cards.
+
+## Previous slice: the map editor
+
+Handcrafted worlds (design: [docs/plan-editor.md](docs/plan-editor.md)). Press
+**Tab** and time freezes — the island becomes clay:
+
+![The editor](docs/editor.png)
+
+- **Sculpting**: raise, lower, flatten, and smooth brushes (`1`-`4`, `[` `]`
+  for size) reshape the heightfield live; nearby props, buildings, and
+  villagers re-seat on the new ground. Forest and rock brushes (`5`, `6`)
+  plant; the eraser (`7`) clears.
+- **Founding**: click villages into being (`8`) — `G` cycles the owner
+  (you / the rival / neutral), `V` the size (small / medium / large
+  population and stores). Seat temples with `9`. Placing a rival village or
+  temple wakes the rival god, AI and all: a skirmish map is just a map that
+  contains an opponent.
+- **Frozen, honest authoring**: the sim halts in the editor; toggling either
+  way rebuilds the world from the map, so playtests never dirty your map and
+  every playtest is a fresh deterministic start. `N` starts from a blank
+  flat island, `R` still rerolls a procedural one.
+- **Map files**: `F5`/`F9` save/load `maps/slot<N>.gmap` (`F6` cycles
+  slots), `--map file.gmap` plays any map, `--editor` boots straight into
+  authoring. A `.gmap` is a *starting condition* — heightfield plus entity
+  specs — and loading one rebuilds the world through the exact founding
+  paths the generator uses: **a loaded map is bit-for-bit the world that was
+  saved**, and save → load → save is byte-identical.
+
+## Previous slice: the rival god
+
+A second god plays the island (design: [docs/plan-rival.md](docs/plan-rival.md)).
+Every new world is a **skirmish** now (`--no-rival` for the peaceful sandbox):
+
+![The rival's seat](docs/rival.png)
+
+- **Fully symmetric, verbs only.** The rival founds its home village and
+  temple on the site farthest from yours and plays through exactly the verbs
+  you have — grabbing and dropping villagers to assign jobs, combining and
+  placing scaffold stacks, casting food miracles, hurling gifts whose landing
+  is credited to their sender. No economic cheats; its villages run the same
+  simulation yours do.
+- **An embodied enemy hand.** Everything it does is executed by a ghostly
+  crimson hand that must fly to a thing before it can touch it — travel
+  speed, decision cadence, and cooldowns are the difficulty knobs. Villagers
+  fear it like they fear yours: they track the nearest looming hand, cower,
+  and flee it.
+- **Three layers of mind.** A per-village *governor* (keep worshippers
+  dancing, feed empty larders, place growth scaffolds by need), a
+  *strategos* (court the nearest neutral with gifts and — once its rings
+  reach — miracles; pressure your weakest village when bold), and an
+  *executor* (one order at a time, re-validated every phase — snatch its
+  target first and it shrugs and replans).
+- **A skirmish can be lost.** A god whose last village converts away is
+  **broken**: its hand withdraws to its temple and hangs still. That fate is
+  yours too — the ratchet doesn't care who it strips. (The temple-collapse
+  ceremony and proper win/lose flow arrive with the skirmish shell, M7.)
+- **The balance tool**: `godgame --match [days]` runs a deterministic
+  AI-vs-AI skirmish headless and reports the war day by day — villages held,
+  belief, mana, divine acts.
+
+## Previous slice: gods & conversion
+
+Belief is territory now (master plan: [docs/plan-game.md](docs/plan-game.md)).
+Villages keep a belief score **per god**, and enough faith flips a village to
+your side:
+
+- **Per-god belief** — every divine act is attributed to the god who performed
+  it: grabs, throws, gifts, burials, miracles. Witnesses credit *that* god.
+  Deaths still terrify without crediting anyone, and they stain the owner's
+  standing.
+- **The conversion ratchet** — a neutral village joins the god whose belief
+  clears 50 % with a clear lead over every rival. An *owned* village is far
+  stickier: a challenger needs overwhelming faith (85 %) while the owner's has
+  collapsed below 35 %. Conversion suppresses rival belief, scatters a few
+  frightened villagers, and rings out an awe event for the new patron —
+  villages change hands rarely, and it means something.
+- **Converted villages are yours for real** — they project your influence
+  rings, their totem accepts Worshippers, their dance feeds *your* mana pool,
+  their store receives your gifts.
+- **Hurled gifts remember their sender** — throw food or wood across the map
+  into a neutral village and whoever picks it up (or the pile that absorbs
+  it) believes a little more in *you*. That's the long-range conversion tool
+  the influence rings can't reach.
+- **Ownership on the map** — totems tint with their owner's color (the player
+  is gold), and a conversion fires a pulse of light and a message.
+- Under the hood: mana, temple, and influence all moved onto `World::gods[]`
+  — the crimson rival god (M5) is a data change away.
+
+## Previous slice: many villages
+
+The strategic map exists. Every island now founds the player's home village
+**plus neutral villages** on the best remaining sites (separated by 130 m+),
+each running the same autonomous simulation — gathering, farming, building,
+sleeping, raising children — with no god over them:
+
+- **Neutral villages** have no Worshipper and generate no mana; their belief
+  in you starts near zero. They sit outside your influence rings — visible,
+  self-sufficient, and unreachable until your reach grows.
+- **Witness routing**: every divine act now reaches whichever village saw
+  it. Impress a neutral village's people and *their* belief in you rises.
+- **Per-village everything**: stores, fields, claims, burials, births,
+  economy counters. Prop claims are packed cross-village ids; villages and
+  their villagers keep stable indices forever.
+- **Spatial obstacle grid** for steering — cost per villager no longer scales
+  with the island's prop count, ready for the crowds ahead.
+
+## Previous slice: mortality & burial
+
+Villagers can now die — and the dead demand dignity:
+
+- **Three ways to go**: impacts above ~26 m/s (a hard throw or a long fall),
+  drowning (~16 s of open-water swimming), and starvation (a day and a half
+  at an empty larder). Gentle handling stays perfectly safe, and a villager
+  held in the hand cannot die — the divine grip preserves.
+- **Bodies are props**: they fall, float (grimly), and can be carried — by
+  villagers or by you.
+- **Burial**: with a Graveyard built, villagers drop what they're doing at
+  the next task boundary to carry the dead there; a grave is dug (stone
+  cairns accumulate) and belief mends a little. You can also lay a body to
+  rest yourself. Corpses left rotting near the village drain belief instead.
+- Every death costs belief and terrifies witnesses. Population is now a real
+  resource: Crèche births against deaths, beds freed by the fallen.
+
+## Previous slice: scaffolds & the buildable village
+
+The growth engine from [docs/plan-game.md](docs/plan-game.md) (slice plan:
+[docs/plan-scaffolds.md](docs/plan-scaffolds.md)) — wood becomes scaffolds
+becomes the village you designed:
+
+![The building roster](docs/roster.png)
+
+- **Workshops craft scaffolds**: builders with no construction to serve work
+  the bench, turning 4 wood into a physical scaffold lattice (up to 3 waiting
+  in the yard).
+- **Combine by hand**: gently place one scaffold onto another to merge stacks
+  (up to 7). Gently place a stack on open ground to commit a construction
+  site — a ghost preview shows what it becomes and whether it fits (green /
+  red). Scaffolds are the material: builders raise the building straight
+  from the stack, ~12 s per scaffold tier.
+- **The roster**: 1 = Small Abode · 2 = Large Abode · 3 = civic (mouse wheel
+  cycles Store / Workshop / Crèche / Graveyard while holding) · 4 = Field ·
+  5 = Village Center upgrade (place at the totem) · 6 = Miracle Dispenser ·
+  7 = Wonder.
+- **Effects**: the Store raises the new storage caps; the Crèche eases
+  births; the Graveyard sustains belief (burial arrives with mortality, M2);
+  Fields plant new crop plots; Center levels widen influence and speed
+  worship; the Dispenser banks worship overflow as free miracle casts; the
+  Wonder's aura slows belief decay and amplifies awe.
+
+## Previous slice: worship, belief & the temple
+
+The god-game loop is closed (design docs: [villagers](docs/plan-villagers.md),
+[worship](docs/plan-worship.md)): worshippers dance at the village totem →
+**mana** fills the pool at your **temple** → you cast **miracles** → villagers
+who witness them **believe** → belief widens your **influence rings** and
+speeds worship.
+
+- **Worshippers** — drop a villager onto the village-center totem to devote
+  them. They dance in a circle around it (prayer motes rising, totem glowing),
+  generating mana scaled by belief — but dancing is hungry work, so every
+  worshipper is a worker you gave up who still eats from the pile.
+- **Belief** — grows when villagers witness divine acts (grabs a little,
+  throws more, gifts dropped on the storage pad, miracles most of all) and
+  decays toward a floor when you're absent. It scales worship output and the
+  village influence radius.
+- **The temple** — the god's seat, founded apart from the village on its own
+  terrace. Its floating gold beacon shows the mana pool at a glance and
+  projects the base influence ring.
+- **Influence** — the hand only highlights, grabs, and casts *inside* the
+  gold rings; outside it turns ghostly and can only pan the camera. Faith
+  literally extends your reach.
+- **The food miracle** (`M` at the cursor, 30 mana) — food rains from the sky;
+  villagers haul it to storage, witnesses believe harder.
+
+## Previous slice: a living village
+
+- **Villagers** — needs (hunger, energy), jobs (forester, farmer, fisherman,
+  builder), and idle lives (wandering, chatting, sitting by the fire).
+  Foresters fell trees with real physics and haul the logs home; farmers tend
+  and harvest a crop field; fishermen cast from shore spots; builders haul
+  wood and raise new houses through visible construction stages. Surplus food
+  means children at dawn.
+- **The hand and the people** — pick villagers up (they flail and panic),
+  throw them (they tumble, get stunned, stagger up, and flee), or set them
+  down gently *on* something to assign a job: trees → forester, the field →
+  farmer, water → fisherman, a construction site → builder. Drop logs, food,
+  or entire uprooted trees onto the storage pad to stock the village.
+  Villagers notice the hand looming and cower if they've learned to fear it.
+- **Day & night** — the sun arcs across the sky, dusk turns the fog salmon,
+  nights are dark with stars, window glow, and the campfire; villagers head
+  home at dusk (the homeless curl up by the fire) and emerge at dawn.
 - **Procedural island** — seeded heightfield (fBm + ridged noise, irregular
-  coastline) with painterly beach / grass / rock / snow coloring, an animated
-  ocean, gradient sky with sun, and distance fog.
-- **The camera** — grab-the-land panning (the point you click stays under the
-  cursor), zoom toward the cursor, orbit/tilt, and pitch that eases toward the
-  horizon as you get close, just like the original.
-- **The divine hand** — hovers along the terrain, picks up rocks and trees,
-  and throws them with the velocity of your gesture. Props tumble, bounce off
-  the terrain, float (trees) or sink (rocks) in water, and fallen trees slowly
-  right themselves and replant.
+  coastline) with painterly coloring, animated ocean, and fog. The village
+  founds itself on the best coastal terrace and gently terraforms it flat —
+  same seed, same island, same village, on every platform.
+- **The camera** — grab-the-land panning, zoom toward the cursor, orbit/tilt,
+  pitch eased by altitude, just like the original.
+
+There is no belief/worship yet (next slice) and villagers cannot die —
+hard landings stun instead. The mortality seams are in place for later.
 
 ## Controls
 
 | Input | Action |
 | --- | --- |
 | Left-drag on ground | Pan (grab the land) |
-| Left-drag on rock/tree | Pick up — release mid-motion to throw |
+| Left-drag on thing | Pick up rock / tree / log / food / scaffold / **villager** |
+| ...release while still | Set down — on trees/field/water/site = assign job; scaffold on scaffold = combine; scaffold on open ground = build |
+| ...release mid-motion | Throw |
+| Wheel (holding a 3-stack) | Choose the civic building (Store/Workshop/Crèche/Graveyard) |
 | Right- or middle-drag | Rotate & tilt camera |
 | Mouse wheel | Zoom toward cursor |
 | `W A S D` / arrows | Move camera (Shift = faster) |
 | `Q` / `E` | Rotate camera |
+| `1` `2` `3` `4` | Select miracle: FOOD / RAIN / FOREST / FIREBALL (HUD shows cost & locks) |
+| `M` | Cast the selected miracle at the cursor (inside influence) |
+| `T` | Advance time of day |
 | `R` | Generate a new island |
+| `Tab` | **Map editor** (frozen time; `1-9` tools, `[` `]` brush, `G` owner, `V` size, `N` blank island, `L` original island as clay, `F5`/`F9`/`F6` map slots) |
+| `F5` / `F9` / `F6` | Quick-save / quick-load / cycle `saves/slot<N>.sav` (in play) |
 | `F2` | Wireframe |
-| `Esc` | Quit |
+| `F7` | Toggle sun shadows (for weak machines) |
+| `F8` | Toggle original B&W meshes ↔ placeholders (with `--bw`) |
+| `Esc` | Pause menu (resume, save, load, main menu, quit) |
+
+Debug/tuning: `F3` tint villagers by AI state, `F4` sim speed ×1/4/16,
+`K` spawn a villager at the hand, `L` +10 wood & food. Gameplay constants
+live in `src/Tuning.h`.
 
 ## Building
 
-Requires CMake 3.16+ and a C++20 compiler. SDL2 and glm are found on the
-system when available and otherwise fetched and built automatically.
-
-### Linux
+One command builds whatever state the tree is in and stages a ready-to-play
+copy in `dist/` — the game boots to the title menu (CONTINUE / SKIRMISH /
+SANDBOX / EDITOR / QUIT), so `dist/` plus `PLAY.txt` is the whole game:
 
 ```sh
-sudo apt install libsdl2-dev libglm-dev   # optional but faster
+./build.sh          # Linux/macOS: build + self-test + stage dist/godgame
+build.bat           # Windows:     build + self-test + stage dist\godgame.exe
+```
+
+Both scripts configure Release, compile, run the full `--headless` self-test
+suite (refusing to stage a broken build — pass `--skip-tests` / `skiptests`
+to skip), then copy the binary and `PLAY.txt` into `dist/`. Add `--run` /
+`run` to launch the game afterwards. New sources, features, and gameplay need
+no script changes — CMake owns the file list. `maps/` and `saves/` are
+created next to the exe as you play, so the `dist/` folder can be moved
+anywhere (on Windows the SDL2 fallback links statically: one exe, no DLLs).
+
+Requires CMake 3.16+ and a C++20 compiler. SDL2 and glm are found on the
+system when available and otherwise fetched and built automatically (the
+first configure is slow, later builds are fast). Manual equivalent:
+
+```sh
+sudo apt install libsdl2-dev libglm-dev   # Linux, optional but faster
 cmake -B build && cmake --build build -j
 ./build/godgame
 ```
 
-### Windows
-
-Open the folder in Visual Studio (CMake project) or run:
-
-```sh
-cmake -B build
-cmake --build build --config Release
-build\Release\godgame.exe
-```
-
-The first configure downloads and builds SDL2; later builds are fast.
+On Windows, opening the folder in Visual Studio (CMake project) also works;
+`build.bat` uses whatever toolchain CMake finds.
 
 ## Command line
 
 ```
-godgame                       play
+godgame                       play a skirmish against the rival god
+godgame --no-rival            peaceful sandbox, no opponent
 godgame --seed 1234           play a specific island
-godgame --headless [steps]    no window: generate world, run physics self-test
-godgame --screenshot out.bmp [frames] [far|close]   render and dump a BMP
+godgame --editor              boot straight into the map editor
+godgame --map file.gmap       play (or, with --editor, edit) a map file
+godgame --load file.sav       resume a saved game
+godgame --headless [steps]    no window: world-gen, physics, village economy,
+                              hand-interaction, rival-AI, map/save round-trip
+                              and determinism self-tests
+godgame --match [days]        no window: AI-vs-AI skirmish, day-by-day war report
+godgame --screenshot out.bmp [frames] [far|close|village|dawn|night|temple|miracle|rival|editor|menu|roster]
+godgame --bw <dir>            overlay original assets from your own B&W install
+godgame --bw <dir> --land 1   play on an original island (1..5)
+godgame --bw <dir> --bw-report  no window: validate the install, print an inventory
 ```
 
 ## Roadmap
 
-- Villagers: needs, jobs, houses, worship
-- Miracles: gesture casting, water/fire/food
-- Influence ring and belief
-- Loaders for original Black & White data files (terrain, meshes, textures)
-- Sound
+The full arc to the real game — **skirmish against AI gods on handcrafted
+maps**, won by converting villages until the enemy temple falls — is laid out
+in [docs/plan-game.md](docs/plan-game.md). The short version:
+
+1. ✅ Scaffolds & the buildable village (workshops craft scaffolds; combine
+   1-7 and place them: abodes, store, crèche, graveyard, field, village
+   center, miracle dispenser, wonder)
+2. ✅ Mortality & burial (population becomes a real resource)
+3. ✅ Many villages (neutrals, the big multi-village refactor)
+4. ✅ Gods & conversion (per-god belief, the ownership ratchet)
+5. ✅ The rival AI god (fully symmetric, an embodied enemy hand)
+6. ✅ In-game map editor (sculpt, plant, found, save/load .gmap)
+7. ✅ Skirmish shell (menus, game saves, the collapse, the HUD)
+8. ✅ Balance & feel pass (pacing sweeps, difficulty presets, juice)
+9. ✅ Light & shadow (sun shadow map, night point lights, water glitter)
+   — next: story mode, or wire in original assets (docs/plan-assets.md)
+
+Also on the list: more miracles, original B&W asset loaders, sound.
 
 ## Layout
 
 ```
 src/
-  main.cpp     app loop, input, rendering, placeholder models, CLI modes
-  gl.h/.cpp    minimal OpenGL 3.3 core loader (via SDL_GL_GetProcAddress)
-  Shader.*     shader compile/link + uniform helpers
-  Mesh.*       interleaved VAO/VBO wrapper + primitive builders
-  Noise.h      deterministic value noise / fBm / ridge
-  Terrain.*    island heightfield: generate, sample, raycast, mesh
-  Water.*      animated transparent ocean
-  Sky.*        fullscreen gradient sky + sun
-  Camera.*     B&W-style camera
-  World.*      props (trees/rocks), physics, scattering
-  Hand.*       the divine hand: hover, grab, carry, throw
+  main.cpp       app loop, input, rendering, placeholder models, CLI modes
+  gl.h/.cpp      minimal OpenGL 3.3 core loader (via SDL_GL_GetProcAddress)
+  Shader.*       shader compile/link + uniform helpers
+  Mesh.*         interleaved VAO/VBO wrapper + primitive builders
+  Models.*       village-slice mesh builders (villagers, buildings, bubbles)
+  Noise.h        deterministic value noise / fBm / ridge + XorShift RNG
+  Terrain.*      island heightfield: generate, flatten, sample, raycast, mesh
+  Physics.*      ballistic sphere step shared by props and thrown villagers
+  Water.*        animated transparent ocean
+  Sky.*          gradient sky + sun, night palette + stars
+  DayCycle.h     time of day: sim schedule + lighting curves
+  Camera.*       B&W-style camera
+  World.*        props (trees/rocks/logs/food), physics, scattering
+  Village.*      settlement: founding, layout, buildings, farm, stores
+  Villager.h     villager data (jobs, states, needs)
+  Villagers.*    villager AI: priority ladder, job loops, steering, poses
+  Hand.*         the divine hand: hover, grab, carry, throw, assign
+  GodAI.*        the rival god: governor/strategos/executor, embodied AI hand
+  MapFile.*      .gmap map files: starting conditions, byte-stable round-trip
+  SaveFile.*     .sav game saves: the complete sim, continues bit-for-bit
+  Serial.h       little-endian byte writer/reader shared by the file formats
+  Font.*         built-in 5x7 pixel font (glyph quads, no textures)
+  Tuning.h       every gameplay constant
 ```

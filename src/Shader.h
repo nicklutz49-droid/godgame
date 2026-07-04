@@ -23,6 +23,7 @@ class Shader {
   void set(const char* name, const glm::vec2& v) const;
   void set(const char* name, const glm::vec3& v) const;
   void set(const char* name, const glm::vec4& v) const;
+  void set(const char* name, const glm::vec3* v, int count) const;
   void set(const char* name, const glm::mat4& m) const;
 
  private:
