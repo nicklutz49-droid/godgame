@@ -93,9 +93,16 @@ for SDL2/glm when system packages are missing — don't add hard system deps.
   Add new GL entry points to `GL_FUNC_LIST` — do not include system GL headers.
 - All meshes share one vertex layout: position(3) normal(3) color(3).
   Placeholder models are built via `MeshData::add*` (main.cpp, Models.cpp) and
-  drawn with the single "lit" shader in main.cpp (uniforms: uModel/uVP/uSunDir/
-  uSunColor/uAmbient/uTint/uCamPos/uFogColor/uFogDensity/uAlpha/uEmissive).
-  Shaders are embedded C++ raw strings.
+  drawn with the "lit" shader in main.cpp (uniforms: uModel/uVP/uSunDir/
+  uSunColor/uAmbient/uTint/uCamPos/uFogColor/uFogDensity/uAlpha/uEmissive,
+  plus the M9 shadow/light set: uLightVP/uShadow/uShadowStrength/
+  uLightCount/uLightPos[6]/uLightCol[6]). Shaders are embedded C++ raw
+  strings. M9 adds one depth-only shader for the sun's shadow pass: a 1024
+  depth FBO with hardware compare, texture unit 1 is RESERVED for it, the
+  ortho box is texel-snapped around the camera focus, and F7 toggles the
+  pass (llvmpipe). Casters = terrain/buildings/temples/trees/rocks/stumps;
+  villagers and loose props keep blob discs. Emissive draws (text, rings,
+  ghosts) bypass shadow and point-light math by design.
 - Sim code (Terrain/World/Village/Villagers/Hand/DayCycle/Physics) never
   touches GL — `--headless` must keep working without a window. Rendering
   lives in main.cpp, Water, Sky.

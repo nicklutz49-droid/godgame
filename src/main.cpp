@@ -51,14 +51,17 @@ layout(location = 1) in vec3 aNormal;
 layout(location = 2) in vec3 aColor;
 uniform mat4 uModel;
 uniform mat4 uVP;
+uniform mat4 uLightVP;     // sun's ortho view (shadow map space)
 out vec3 vWorld;
 out vec3 vNormal;
 out vec3 vColor;
+out vec4 vShadow;
 void main() {
   vec4 world = uModel * vec4(aPos, 1.0);
   vWorld = world.xyz;
   vNormal = mat3(uModel) * aNormal;
   vColor = aColor;
+  vShadow = uLightVP * world;
   gl_Position = uVP * world;
 }
 )GLSL";
@@ -68,6 +71,7 @@ const char* kLitFragmentSrc = R"GLSL(
 in vec3 vWorld;
 in vec3 vNormal;
 in vec3 vColor;
+in vec4 vShadow;
 uniform vec3 uSunDir;
 uniform vec3 uSunColor;    // day/night sunlight tint (from DayCycle)
 uniform vec3 uAmbient;     // ambient light color (from DayCycle)
@@ -77,12 +81,46 @@ uniform vec3 uFogColor;
 uniform float uFogDensity;
 uniform float uAlpha;
 uniform float uEmissive;   // 0 = fully lit, 1 = raw albedo
+uniform sampler2DShadow uShadow;   // the sun's depth map (PCF via compare)
+uniform float uShadowStrength;     // 0 = off/night, fades in with sun height
+uniform int uLightCount;           // fires & beacons (night point lights)
+uniform vec3 uLightPos[6];
+uniform vec3 uLightCol[6];
 out vec4 FragColor;
 void main() {
   vec3 n = normalize(vNormal);
   float diff = max(dot(n, uSunDir), 0.0);
   vec3 albedo = vColor * uTint;
-  vec3 lit = albedo * (uAmbient * (0.9 + 0.25 * n.y) + diff * uSunColor);
+
+  // Shadow: 4-tap PCF around the projected texel (hardware compare adds
+  // another 2x2, so edges come out soft even at 1024).
+  float shadow = 1.0;
+  if (uShadowStrength > 0.001) {
+    vec3 sc = vShadow.xyz / vShadow.w;
+    sc = sc * 0.5 + 0.5;
+    sc.z -= 0.0022;  // acne bias (with the depth pass's polygon offset)
+    if (sc.x > 0.0 && sc.x < 1.0 && sc.y > 0.0 && sc.y < 1.0 && sc.z < 1.0) {
+      float texel = 1.0 / 1024.0;
+      float lightTerm =
+          (texture(uShadow, vec3(sc.xy + vec2(-0.5, -0.5) * texel, sc.z)) +
+           texture(uShadow, vec3(sc.xy + vec2( 1.5, -0.5) * texel, sc.z)) +
+           texture(uShadow, vec3(sc.xy + vec2(-0.5,  1.5) * texel, sc.z)) +
+           texture(uShadow, vec3(sc.xy + vec2( 1.5,  1.5) * texel, sc.z))) * 0.25;
+      shadow = mix(1.0, lightTerm, uShadowStrength);
+    }
+  }
+
+  vec3 lit = albedo * (uAmbient * (0.9 + 0.25 * n.y) * mix(0.78, 1.0, shadow) +
+                       diff * shadow * uSunColor);
+
+  // Fires and beacons: small warm spheres of light in the dark.
+  for (int i = 0; i < uLightCount; ++i) {
+    vec3 toL = uLightPos[i] - vWorld;
+    float d = length(toL);
+    float att = 1.0 / (1.0 + 0.10 * d + 0.045 * d * d);
+    float ndl = max(dot(n, toL / max(d, 0.001)), 0.0);
+    lit += albedo * uLightCol[i] * ndl * att;
+  }
 
   // Everything below the waterline picks up a submerged blue-green cast.
   if (vWorld.y < 0.0) {
@@ -96,6 +134,20 @@ void main() {
   col = mix(col, uFogColor, fog);
   FragColor = vec4(col, uAlpha);
 }
+)GLSL";
+
+// The sun's depth pass: position-only, empty fragment (depth writes).
+const char* kDepthVertexSrc = R"GLSL(
+#version 330 core
+layout(location = 0) in vec3 aPos;
+uniform mat4 uModel;
+uniform mat4 uLightVP;
+void main() { gl_Position = uLightVP * uModel * vec4(aPos, 1.0); }
+)GLSL";
+
+const char* kDepthFragmentSrc = R"GLSL(
+#version 330 core
+void main() {}
 )GLSL";
 
 // ------------------------------------------------------- placeholder models
@@ -338,6 +390,14 @@ struct App {
   float menuY0 = 0.0f, menuStep = 30.0f;  // row hit-testing for the mouse
   int menuRows = 0;
 
+  // --- light & shadow (M9): the sun's depth map + night point lights ---
+  Shader depthShader;
+  GLuint shadowTex = 0, shadowFbo = 0;
+  static constexpr int kShadowSize = 1024;
+  bool shadowsOn = true;    // F7 toggles
+  glm::mat4 lightVP{1.0f};
+  void drawShadowCasters(Shader& sh);
+
   void activateMenuRow(int row);
   void adjustMenuRow(int row, int dir);
   void clearFallenTempleRings();
@@ -465,6 +525,37 @@ bool App::initGraphics() {
 
 void App::initScene() {
   lit.compile(kLitVertexSrc, kLitFragmentSrc, "lit");
+  depthShader.compile(kDepthVertexSrc, kDepthFragmentSrc, "depth");
+
+  // The sun's shadow map: depth-only FBO, hardware depth-compare sampling
+  // (LINEAR compare = free 2x2 PCF), white border so off-map means lit.
+  gl.GenTextures(1, &shadowTex);
+  gl.BindTexture(GL_TEXTURE_2D, shadowTex);
+  gl.TexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, kShadowSize, kShadowSize,
+                0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+  gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+  gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+  const GLfloat kWhite[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+  gl.TexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, kWhite);
+  gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE,
+                   GL_COMPARE_REF_TO_TEXTURE);
+  gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
+  gl.GenFramebuffers(1, &shadowFbo);
+  gl.BindFramebuffer(GL_FRAMEBUFFER, shadowFbo);
+  gl.FramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D,
+                          shadowTex, 0);
+  gl.DrawBuffer(GL_NONE);
+  gl.ReadBuffer(GL_NONE);
+  if (gl.CheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+    SDL_Log("Shadow framebuffer incomplete - shadows disabled");
+    shadowsOn = false;
+  }
+  gl.BindFramebuffer(GL_FRAMEBUFFER, 0);
+  lit.use();
+  lit.set("uShadow", 1);  // the map lives on texture unit 1, forever
+
   sky.init();
   water.init();
 
@@ -1061,6 +1152,10 @@ void App::handleEvent(const SDL_Event& e) {
           simSpeed = simSpeed == 1 ? 4 : (simSpeed == 4 ? 16 : 1);
           SDL_Log("sim speed x%d", simSpeed);
           break;
+        case SDLK_F7:
+          shadowsOn = !shadowsOn;
+          SDL_Log("shadows %s", shadowsOn ? "on" : "off");
+          break;
         case SDLK_1:
         case SDLK_2:
         case SDLK_3:
@@ -1377,10 +1472,70 @@ glm::vec3 stateTintColor(VState s) {
 
 }  // namespace
 
+// Everything solid enough to block the sun: terrain, standing vegetation
+// and boulders, buildings, temples. Villagers and loose small props keep
+// their blob discs instead (cheap, and crowds stay readable).
+void App::drawShadowCasters(Shader& sh) {
+  sh.set("uModel", glm::mat4(1.0f));
+  terrainMesh.draw();
+
+  for (const Prop& p : world.props) {
+    if (!p.alive) continue;
+    const Mesh* mesh = nullptr;
+    switch (p.type) {
+      case PropType::Tree: mesh = &treeMeshes[p.variant]; break;
+      case PropType::Rock: mesh = &rockMeshes[p.variant]; break;
+      case PropType::Stump: mesh = &stumpMesh; break;
+      default: break;
+    }
+    if (!mesh) continue;
+    sh.set("uModel", glm::translate(glm::mat4(1.0f), p.pos) *
+                         glm::mat4_cast(p.rot) *
+                         glm::scale(glm::mat4(1.0f), glm::vec3(p.scale)));
+    mesh->draw();
+  }
+
+  for (const Village& vil : world.villages) {
+    if (!vil.founded) continue;
+    for (const Building& b : vil.buildings) {
+      if (b.stage < 0) continue;
+      const Mesh* mesh = nullptr;
+      if (b.type == BuildingType::House) {
+        mesh = &houseStages[std::clamp(b.stage, 0, 3)];
+      } else if (b.stage == 3) {
+        switch (b.type) {
+          case BuildingType::LargeAbode: mesh = &largeAbodeMesh; break;
+          case BuildingType::Store: mesh = &storeMesh; break;
+          case BuildingType::Workshop: mesh = &workshopMesh; break;
+          case BuildingType::Creche: mesh = &crecheMesh; break;
+          case BuildingType::Graveyard: mesh = &graveyardMesh; break;
+          case BuildingType::Dispenser: mesh = &dispenserMesh; break;
+          case BuildingType::Wonder: mesh = &wonderMesh; break;
+          case BuildingType::Center: mesh = &totemMesh; break;
+          default: break;  // pads, fires, fields: too flat to matter
+        }
+      }
+      if (!mesh) continue;
+      sh.set("uModel",
+             glm::translate(glm::mat4(1.0f), b.pos) *
+                 glm::rotate(glm::mat4(1.0f), b.yaw, glm::vec3(0, 1, 0)));
+      mesh->draw();
+    }
+  }
+
+  for (int g = 0; g < tune::kMaxGods; ++g) {
+    const God& deity = world.gods[g];
+    if (!deity.active || !deity.temple.founded) continue;
+    sh.set("uModel",
+           glm::translate(glm::mat4(1.0f), deity.temple.pos) *
+               glm::rotate(glm::mat4(1.0f), deity.temple.yaw, glm::vec3(0, 1, 0)));
+    templeMesh.draw();
+  }
+}
+
 void App::render(float time) {
   int dw = winW, dh = winH;
   SDL_GL_GetDrawableSize(window, &dw, &dh);
-  gl.Viewport(0, 0, dw, dh);
 
   // Lighting follows the day cycle; noon matches the original fixed look.
   const DayCycle& day = world.dayCycle;
@@ -1390,6 +1545,38 @@ void App::render(float time) {
   glm::vec3 ambient = day.ambient();
   float night = 1.0f - day.daylight();
 
+  // ---- the sun's depth pass: the world casts real shadows ----
+  bool shadowsLive = shadowsOn && sunDir.y > 0.04f;
+  if (shadowsLive) {
+    const float ext = 190.0f;  // half-extent of the shadowed square (m)
+    glm::vec3 focus = cam.focus;
+    glm::mat4 lview = glm::lookAt(focus + sunDir * 240.0f, focus,
+                                  glm::vec3(0.0f, 1.0f, 0.0f));
+    glm::mat4 lproj = glm::ortho(-ext, ext, -ext, ext, 20.0f, 520.0f);
+    // Texel snap: quantize the light-space origin so shadows don't shimmer
+    // as the camera pans.
+    glm::mat4 lvp = lproj * lview;
+    glm::vec4 origin = lvp * glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+    glm::vec2 texel(2.0f / static_cast<float>(kShadowSize));
+    glm::vec2 fracOff = glm::fract(glm::vec2(origin) / texel) * texel;
+    lproj = glm::translate(glm::mat4(1.0f),
+                           glm::vec3(-fracOff.x, -fracOff.y, 0.0f)) *
+            lproj;
+    lightVP = lproj * lview;
+
+    gl.BindFramebuffer(GL_FRAMEBUFFER, shadowFbo);
+    gl.Viewport(0, 0, kShadowSize, kShadowSize);
+    gl.Clear(GL_DEPTH_BUFFER_BIT);
+    gl.Enable(GL_POLYGON_OFFSET_FILL);
+    gl.PolygonOffset(2.2f, 4.0f);
+    depthShader.use();
+    depthShader.set("uLightVP", lightVP);
+    drawShadowCasters(depthShader);
+    gl.Disable(GL_POLYGON_OFFSET_FILL);
+    gl.BindFramebuffer(GL_FRAMEBUFFER, 0);
+  }
+
+  gl.Viewport(0, 0, dw, dh);
   gl.ClearColor(fogColor.r, fogColor.g, fogColor.b, 1.0f);
   gl.Clear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -1422,6 +1609,55 @@ void App::render(float time) {
   lit.set("uFogDensity", fogDensity);
   lit.set("uAlpha", 1.0f);
   lit.set("uEmissive", 0.0f);
+
+  // The shadow map rides on unit 1; strength fades in with sun height so
+  // grazing dawn light never turns to acne.
+  gl.ActiveTexture(GL_TEXTURE1);
+  gl.BindTexture(GL_TEXTURE_2D, shadowTex);
+  gl.ActiveTexture(GL_TEXTURE0);
+  lit.set("uLightVP", lightVP);
+  lit.set("uShadowStrength",
+          shadowsLive ? std::min(0.82f, std::max(0.0f, sunDir.y) * 4.0f) : 0.0f);
+
+  // Fires and beacons: the nearest six light the night.
+  {
+    glm::vec3 lp[6], lc[6];
+    int lcount = 0;
+    if (night > 0.05f) {
+      struct L {
+        float d;
+        glm::vec3 p, c;
+      };
+      std::vector<L> ls;
+      for (const Village& vil : world.villages) {
+        if (!vil.founded) continue;
+        glm::vec3 fp = vil.campfirePos() + glm::vec3(0.0f, 1.3f, 0.0f);
+        float flick = 0.75f + 0.25f * std::sin(time * 9.0f + fp.x * 0.37f);
+        ls.push_back({glm::distance(fp, cam.focus), fp,
+                      glm::vec3(1.0f, 0.52f, 0.22f) * (2.4f * flick * night)});
+      }
+      for (int g = 0; g < tune::kMaxGods; ++g) {
+        const God& deity = world.gods[g];
+        if (!deity.active || !deity.temple.founded) continue;
+        glm::vec3 bp = deity.temple.pos + glm::vec3(0.0f, 5.4f, 0.0f);
+        ls.push_back(
+            {glm::distance(bp, cam.focus), bp, godColor(g) * (1.8f * night)});
+      }
+      std::sort(ls.begin(), ls.end(),
+                [](const L& a, const L& b) { return a.d < b.d; });
+      for (const L& l : ls) {
+        if (lcount == 6) break;
+        lp[lcount] = l.p;
+        lc[lcount] = l.c;
+        ++lcount;
+      }
+    }
+    lit.set("uLightCount", lcount);
+    if (lcount > 0) {
+      lit.set("uLightPos", lp, lcount);
+      lit.set("uLightCol", lc, lcount);
+    }
+  }
 
   if (wireframe) gl.PolygonMode(GL_FRONT_AND_BACK, GL_LINE);
 
@@ -1627,11 +1863,9 @@ void App::render(float time) {
       villagerLeg.draw();
       lit.set("uModel", root * pose.legR);
       villagerLeg.draw();
-    } else {
-      lit.set("uTint", glm::vec3(1.0f));
+      lit.set("uModel", root * pose.head);
+      villagerHeads[v.variant % 3].draw();
     }
-    lit.set("uModel", root * pose.head);
-    villagerHeads[v.variant % 3].draw();
     lit.set("uTint", glm::vec3(1.0f));
   }
   }  // per-village villagers
@@ -1670,11 +1904,12 @@ void App::render(float time) {
     shadowDisc.draw();
   }
 
-  // Thought bubbles: needs and fear, yaw-billboarded.
+  // Thought bubbles: needs and fear, yaw-billboarded (and only close by).
   for (const Village& vil : world.villages)
   for (std::size_t i = 0; i < vil.villagers.size(); ++i) {
     const Villager& v = vil.villagers[i];
     if (!v.alive || v.inside) continue;
+    if (glm::distance(camPos, v.pos) > 140.0f) continue;
     const Mesh* bubble = nullptr;
     if (v.state == VState::Panic || v.state == VState::Cower || v.held ||
         v.state == VState::Airborne)
@@ -2161,11 +2396,12 @@ int App::runScreenshot(const std::string& path, int frames, const std::string& v
     cam.focus = target;
     cam.distance = 45.0f;
     cam.yaw = 2.2f;
-  } else if (view == "village" || view == "night") {
+  } else if (view == "village" || view == "night" || view == "dawn") {
     cam.focus = world.home().center;
     cam.distance = 85.0f;
     cam.yaw = 2.3f;
     if (view == "night") world.dayCycle.t = 0.93f;
+    if (view == "dawn") world.dayCycle.t = 0.285f;  // long shadows
   } else if (view == "temple") {
     cam.focus = world.gods[0].temple.pos;
     cam.distance = 55.0f;
@@ -2245,11 +2481,17 @@ int App::runScreenshot(const std::string& path, int frames, const std::string& v
   mouseY = winH / 2;
 
   float time = 0.0f;
+  Uint64 t0 = SDL_GetPerformanceCounter();
   for (int i = 0; i < frames; ++i) {
     update(1.0f / 60.0f);
     render(time);
     time += 1.0f / 60.0f;
   }
+  double ms = 1000.0 *
+              static_cast<double>(SDL_GetPerformanceCounter() - t0) /
+              static_cast<double>(SDL_GetPerformanceFrequency()) / frames;
+  SDL_Log("avg frame %.1f ms (%d frames, shadows %s)", ms, frames,
+          shadowsOn ? "on" : "off");
 
   int dw = winW, dh = winH;
   SDL_GL_GetDrawableSize(window, &dw, &dh);

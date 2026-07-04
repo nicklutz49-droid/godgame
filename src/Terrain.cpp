@@ -240,6 +240,16 @@ MeshData Terrain::buildMeshData() const {
       float h = vertexHeight(i, j);
       glm::vec3 n = normalAt(x, z);
 
+      // Baked ambient occlusion: vertices below their neighbourhood average
+      // sit in a crease and darken; ridges pick up a whisper of extra light.
+      float nb = 0.0f;
+      nb += vertexHeight(i - 2, j) + vertexHeight(i + 2, j);
+      nb += vertexHeight(i, j - 2) + vertexHeight(i, j + 2);
+      nb += vertexHeight(i - 1, j - 1) + vertexHeight(i + 1, j - 1);
+      nb += vertexHeight(i - 1, j + 1) + vertexHeight(i + 1, j + 1);
+      float concave = nb * 0.125f - h;  // >0 = below the neighbourhood
+      float ao = 1.0f - std::clamp(concave * 0.10f, -0.05f, 0.22f);
+
       // Painterly height/slope palette: seabed, sand, grass, rock, snow.
       float variation = noise::fbm(x * 0.05f, z * 0.05f, 3, seed_ + 5u) - 0.5f;
       glm::vec3 seabed(0.42f, 0.40f, 0.30f);
@@ -255,6 +265,7 @@ MeshData Terrain::buildMeshData() const {
       c = glm::mix(c, snow, smoothstep(43.0f, 49.0f, h + variation * 4.0f));
       // Steep slopes read as exposed rock regardless of altitude.
       c = glm::mix(rock * (0.9f + variation * 0.3f), c, smoothstep(0.42f, 0.60f, n.y));
+      c *= ao;
 
       md.addVertex(glm::vec3(x, h, z), n, c);
     }

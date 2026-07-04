@@ -54,6 +54,27 @@ using GLintptr = std::ptrdiff_t;
 #define GL_RENDERER 0x1F01
 #define GL_VERSION 0x1F02
 #define GL_MULTISAMPLE 0x809D
+#define GL_NONE 0
+#define GL_TEXTURE_2D 0x0DE1
+#define GL_TEXTURE0 0x84C0
+#define GL_TEXTURE1 0x84C1
+#define GL_DEPTH_COMPONENT 0x1902
+#define GL_DEPTH_COMPONENT24 0x81A6
+#define GL_NEAREST 0x2600
+#define GL_LINEAR 0x2601
+#define GL_TEXTURE_MAG_FILTER 0x2800
+#define GL_TEXTURE_MIN_FILTER 0x2801
+#define GL_TEXTURE_WRAP_S 0x2802
+#define GL_TEXTURE_WRAP_T 0x2803
+#define GL_CLAMP_TO_BORDER 0x812D
+#define GL_TEXTURE_BORDER_COLOR 0x1004
+#define GL_TEXTURE_COMPARE_MODE 0x884C
+#define GL_TEXTURE_COMPARE_FUNC 0x884D
+#define GL_COMPARE_REF_TO_TEXTURE 0x884E
+#define GL_FRAMEBUFFER 0x8D40
+#define GL_DEPTH_ATTACHMENT 0x8D00
+#define GL_FRAMEBUFFER_COMPLETE 0x8CD5
+#define GL_POLYGON_OFFSET_FILL 0x8037
 #define GL_ARRAY_BUFFER 0x8892
 #define GL_ELEMENT_ARRAY_BUFFER 0x8893
 #define GL_STATIC_DRAW 0x88E4
@@ -110,7 +131,23 @@ using GLintptr = std::ptrdiff_t;
   X(void, Uniform2f, (GLint, GLfloat, GLfloat)) \
   X(void, Uniform3f, (GLint, GLfloat, GLfloat, GLfloat)) \
   X(void, Uniform4f, (GLint, GLfloat, GLfloat, GLfloat, GLfloat)) \
-  X(void, UniformMatrix4fv, (GLint, GLsizei, GLboolean, const GLfloat*))
+  X(void, Uniform3fv, (GLint, GLsizei, const GLfloat*)) \
+  X(void, UniformMatrix4fv, (GLint, GLsizei, GLboolean, const GLfloat*)) \
+  X(void, GenTextures, (GLsizei, GLuint*)) \
+  X(void, DeleteTextures, (GLsizei, const GLuint*)) \
+  X(void, BindTexture, (GLenum, GLuint)) \
+  X(void, ActiveTexture, (GLenum)) \
+  X(void, TexImage2D, (GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum, const void*)) \
+  X(void, TexParameteri, (GLenum, GLenum, GLint)) \
+  X(void, TexParameterfv, (GLenum, GLenum, const GLfloat*)) \
+  X(void, GenFramebuffers, (GLsizei, GLuint*)) \
+  X(void, DeleteFramebuffers, (GLsizei, const GLuint*)) \
+  X(void, BindFramebuffer, (GLenum, GLuint)) \
+  X(void, FramebufferTexture2D, (GLenum, GLenum, GLenum, GLuint, GLint)) \
+  X(GLenum, CheckFramebufferStatus, (GLenum)) \
+  X(void, DrawBuffer, (GLenum)) \
+  X(void, ReadBuffer, (GLenum)) \
+  X(void, PolygonOffset, (GLfloat, GLfloat))
 
 struct GLApi {
 #define GL_DECLARE_MEMBER(ret, name, args) ret(GLCALL* name) args = nullptr;

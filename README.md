@@ -10,7 +10,30 @@ screen is procedural placeholder art. There is no creature, by design.
 ![The temple](docs/temple.png)
 ![The island](docs/island.png)
 
-## Current slice: the balance & feel pass
+## Current slice: light & shadow
+
+The island learned about the sun (design:
+[docs/plan-shading.md](docs/plan-shading.md)):
+
+![Dawn](docs/dawn.png)
+
+- **Real shadows** — the world renders a depth map from the sun every
+  frame: houses stretch long shadows at dawn, mountains flood their valleys
+  at dusk, trees dapple the ground. PCF-softened, texel-snapped (no
+  shimmer), fading in with sun height. Villagers and loose props keep their
+  soft blob discs so crowds stay readable. `F7` toggles the whole pass for
+  weak machines (llvmpipe: ~45 ms with, ~23 ms without at village view).
+- **Night is lit by fire** — up to six point lights: campfires flicker warm
+  pools onto the villagers gathered around them, temple beacons glow in
+  their god's color across the dark.
+- **Atmosphere** — sun-glitter sparkles across the waves and follows the
+  time of day; terrain ambient occlusion is baked into the mesh (gullies
+  and creases read deep); villagers drop to silhouettes beyond 180 m and
+  keep their thought bubbles to themselves past 140 m.
+- Still GL 3.3 core, still procedural, still one lit shader (plus a
+  two-line depth shader) — no textures, no extensions.
+
+## Previous slice: the balance & feel pass
 
 The war is paced on purpose now (decisions locked with the owner; data from
 `--match` sweeps at real day length):
@@ -277,6 +300,7 @@ hard landings stun instead. The mortality seams are in place for later.
 | `Tab` | **Map editor** (frozen time; `1-9` tools, `[` `]` brush, `G` owner, `V` size, `N` blank island, `F5`/`F9`/`F6` map slots) |
 | `F5` / `F9` / `F6` | Quick-save / quick-load / cycle `saves/slot<N>.sav` (in play) |
 | `F2` | Wireframe |
+| `F7` | Toggle sun shadows (for weak machines) |
 | `Esc` | Pause menu (resume, save, load, main menu, quit) |
 
 Debug/tuning: `F3` tint villagers by AI state, `F4` sim speed ×1/4/16,
@@ -321,7 +345,7 @@ godgame --headless [steps]    no window: world-gen, physics, village economy,
                               hand-interaction, rival-AI, map/save round-trip
                               and determinism self-tests
 godgame --match [days]        no window: AI-vs-AI skirmish, day-by-day war report
-godgame --screenshot out.bmp [frames] [far|close|village|night|temple|rival|editor|menu|roster]
+godgame --screenshot out.bmp [frames] [far|close|village|dawn|night|temple|rival|editor|menu|roster]
 ```
 
 ## Roadmap
@@ -340,6 +364,7 @@ in [docs/plan-game.md](docs/plan-game.md). The short version:
 6. ✅ In-game map editor (sculpt, plant, found, save/load .gmap)
 7. ✅ Skirmish shell (menus, game saves, the collapse, the HUD)
 8. ✅ Balance & feel pass (pacing sweeps, difficulty presets, juice)
+9. ✅ Light & shadow (sun shadow map, night point lights, water glitter)
    — next: story mode, or wire in original assets (docs/plan-assets.md)
 
 Also on the list: more miracles, original B&W asset loaders, sound.
