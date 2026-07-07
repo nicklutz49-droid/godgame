@@ -36,31 +36,63 @@ if(NOT glm_FOUND AND NOT TARGET glm::glm AND NOT EXISTS "/usr/include/glm/glm.hp
   FetchContent_MakeAvailable(glm)
 endif()
 
-add_executable(godgame
-  src/main.cpp
-  src/gl.cpp
-  src/Shader.cpp
-  src/Mesh.cpp
-  src/Terrain.cpp
-  src/Water.cpp
-  src/Sky.cpp
-  src/Camera.cpp
+# Warnings, applied to every target we own.
+function(godgame_warnings tgt)
+  if(MSVC)
+    target_compile_options(${tgt} PRIVATE /W3 /permissive-)
+  else()
+    target_compile_options(${tgt} PRIVATE -Wall -Wextra)
+  endif()
+endfunction()
+
+# glm (header-only) for a target: link the imported target when present,
+# otherwise the system headers on the default include path already satisfy it.
+function(godgame_link_glm tgt vis)
+  if(TARGET glm::glm)
+    target_link_libraries(${tgt} ${vis} glm::glm)
+  endif()
+endfunction()
+
+# ---- godgame_sim: the engine-free deterministic simulation ----------------
+# No GL, no SDL, no window. This is the checksummed model layer: the headless
+# self-test suite links it today, and the future Godot GDExtension bridge will
+# link this exact library so every determinism invariant lives in one place.
+# MeshData.cpp is CPU-only geometry (Terrain builds meshes); the GL Mesh class
+# stays in the app below.
+add_library(godgame_sim STATIC
   src/World.cpp
-  src/Hand.cpp
-  src/Physics.cpp
   src/Village.cpp
   src/Villagers.cpp
   src/GodAI.cpp
+  src/Terrain.cpp
+  src/Hand.cpp
+  src/Physics.cpp
   src/MapFile.cpp
   src/SaveFile.cpp
-  src/Font.cpp
-  src/Models.cpp
-  src/Sound.cpp
+  src/MeshData.cpp
   src/bw/BWPack.cpp
   src/bw/BWLand.cpp
   src/bw/BWMesh.cpp
   src/bw/BWAssets.cpp
 )
+target_include_directories(godgame_sim PUBLIC src)
+godgame_link_glm(godgame_sim PUBLIC)
+godgame_warnings(godgame_sim)
+
+# ---- godgame: the interactive app + headless suite (view + shell) ---------
+add_executable(godgame
+  src/main.cpp
+  src/gl.cpp
+  src/Shader.cpp
+  src/Mesh.cpp
+  src/Water.cpp
+  src/Sky.cpp
+  src/Camera.cpp
+  src/Font.cpp
+  src/Models.cpp
+  src/Sound.cpp
+)
+target_link_libraries(godgame PRIVATE godgame_sim)
 
 # We call SDL_SetMainReady() ourselves and use a plain main().
 target_compile_definitions(godgame PRIVATE SDL_MAIN_HANDLED)
@@ -74,12 +106,5 @@ else()
   target_link_libraries(godgame PRIVATE ${SDL2_LIBRARIES})
 endif()
 
-if(TARGET glm::glm)
-  target_link_libraries(godgame PRIVATE glm::glm)
-endif()
-
-if(MSVC)
-  target_compile_options(godgame PRIVATE /W3 /permissive-)
-else()
-  target_compile_options(godgame PRIVATE -Wall -Wextra)
-endif()
+godgame_link_glm(godgame PRIVATE)
+godgame_warnings(godgame)

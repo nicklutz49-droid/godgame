@@ -1,120 +1,123 @@
-# godgame — the native Godot rebuild
+# godgame — the Godot port (hybrid GDExtension)
 
-Decision (owner, this session): rebuild the game **natively in Godot 4
-first** — idiomatic engine usage, get it playable — then **rework and add
-back** the hard-won systems that need more attention as deliberate later
-passes. The C++ game stays in this repo as the runnable reference/spec while
-the port catches up.
+Decision (owner, this session): bring the game to **Godot 4 as a hybrid** —
+keep all of `src/` compiled **unchanged** as an engine-free deterministic
+C++ library (`godgame_sim`), expose it to Godot through a thin `godot-cpp`
+**GDExtension** bridge, and rebuild only the *view/shell* (renderer, water,
+sky, HUD, menus, audio device, input) as Godot nodes on the **Compatibility
+(OpenGL 3.3)** renderer. This preserves every crown jewel — the FNV
+`worldChecksum`, the lockstep save/continue-equality, `.sav`/`.gmap`
+byte-stability, AI-vs-AI reproducibility, the `bw` overlay loaders, and the
+260-check headless suite — because the checksummed bytes never leave the C++
+that produces them. Godot is never in the sim loop, so its non-deterministic
+physics/RNG/navigation are simply never used.
 
-Locked choices:
-- **Language: GDScript.** One binary to run, fastest iteration; heavier
-  logic ports later.
-- **Movement/physics: Godot built-ins.** CharacterBody3D villagers,
-  NavigationServer pathfinding, built-in physics for thrown props. This is
-  nondeterministic — which is *fine for now*; determinism is a named
-  rework-later item, not a day-one constraint.
-- **First slice: island + a village + the hand.** No rival, miracles,
-  worship economy, or save yet.
+This supersedes the earlier "native-first GDScript rewrite" framing (and the
+`godot/` GDScript island prototype, G1 — kept as a throwaway toolchain
+smoke test). The independent scoping workflow reached the same conclusion:
+a rewrite would re-author ~10k lines of float sim under *weaker* determinism
+guarantees; the hybrid makes the whole determinism question moot.
 
-## 0. Environment caveat (read first)
+## 0. Environment caveat
 
-Godot can't be installed in the CI/agent environment (egress policy blocks
-godotengine.org and the release hosts). So the Godot project is authored as
-text and **verified by the owner running it locally** — like `build.bat`
-was. Build in small runnable increments; confirm each in the editor before
-piling on. Godot files that ARE safe to author blind: `project.godot`,
-`.tscn`/`.tres` (text), `.gd`. Prefer building scenes **from GDScript** in
-`_ready()` so hand-authored `.tscn` stays trivial (fewer blind-authoring
-foot-guns).
+Godot can't be installed in the agent environment (egress policy blocks
+godotengine.org and the release hosts, and godot-cpp fetch may be blocked
+too). So: **Phase 1 (the C++ library split) is fully built and verified
+here** — it's pure C++/CMake and the 260-check suite is the gate. The
+Godot-side pieces (the GDExtension bridge that needs godot-cpp headers, and
+the Godot view project) are **authored as text and verified by the owner
+running them locally**, like `build.bat` was.
 
-## 1. Layout
+## 1. Path chosen, and why not the others
 
-```
-godot/                 the Godot 4 project (this is the new game)
-  project.godot
-  Main.tscn            trivial: one Node3D + Main.gd
-  Main.gd              builds the world from code
-  README.md            how to open & run
-src/, docs/, *.md      the C++ game stays as the reference spec
-```
-`.godot/` (editor cache) is gitignored.
+- **Path A — native rewrite (C#/GDScript): rejected.** Godot Jolt disclaims
+  determinism, NavigationServer avoidance is async on a threadpool, and
+  neither GDScript nor the .NET JIT gives fixed-order/contraction-controlled
+  float bit-identity. A rewrite retires determinism, the lockstep save, the
+  AI-vs-AI tooling, and the headless suite — and "rework them back later" is
+  a from-scratch fixed-point sim, not a light pass.
+- **Path B — hybrid GDExtension: chosen.** The model/view firewall the
+  codebase already enforces (sim never touches GL/SDL; talks out only via
+  `World::events` + the checksum) *becomes* the extension boundary for free.
+- **Path C — stay in C++: the baseline** the port must out-earn (it buys the
+  Godot renderer, editor, UI, and one day easier art/import).
 
-## 2. What Godot gives us for free (stop hand-rolling these)
+Trade accepted: Godot is a view over a C++ core, so we do **not** use its
+physics/nav/particles for gameplay, and web/mobile export is harder (native
+code). If those ever outrank determinism, revisit Path A.
 
-- **Rendering**: real shadows, GI, PBR, post — our whole M9 hand-built
-  shadow map / point-light gather / water / AO becomes engine features.
-- **Camera, input, UI**: Camera3D, the input map, Control-node menus/HUD
-  replace the M7 pixel-font shell.
-- **Physics & navigation**: CharacterBody3D + NavigationServer replace our
-  steering + single-sphere physics (at the cost of determinism — see §5).
-- **Audio**: AudioStreamPlayer3D + buses replace the M12 mixer; procedural
-  synthesis can stay via AudioStreamGenerator if we want it.
-- **Assets & export**: glTF import, and one-click Windows/Mac/Linux/web/
-  mobile export.
+## 2. Phases (P1 done; P1b–P5 ahead)
 
-## 3. Slice roadmap to parity (native, GDScript, built-ins)
+### P0 — pinned constraints (ratified)
+- **Compatibility (GL 3.3) renderer** to preserve the llvmpipe/GL-3.3-core
+  invariant (Forward+/Mobile are Vulkan; crash on software rasterizers).
+- Pin one Godot 4.x to a matching `godot-cpp` tag; "rebuild + re-run the
+  full suite" is part of every engine upgrade (GDExtension is
+  forward-compatible only).
+- `glm` stays the sim's internal math type; convert to `godot::Vector3`
+  **one-way, outbound, at the render boundary only**.
+- No `-ffast-math`/`-Ofast`; SSE2 (no x87); the sim lib and the bridge
+  compile with matching C++20/ABI/runtime-library flags.
+- The sim stays **single-threaded** and off Godot's worker threads.
 
-Each slice is runnable and owner-verified before the next.
+### P1 — engine-free `godgame_sim` static lib ✅ (built & verified here)
+`Mesh.cpp` split into `MeshData.cpp` (CPU builders, in the lib) and
+`Mesh.cpp` (the GL class, app-side). New `godgame_sim` static library:
+`World / Village / Villagers / GodAI / Terrain / Hand / Physics / MapFile /
+SaveFile / MeshData / bw/*` — **provably zero GL and zero SDL symbols**
+(`nm` clean). The app links it; the 260-check suite stays green; the render
+path is unchanged (village screenshot identical workflow). This is the
+library the GDExtension will link.
 
-- **G1 — the island** (this commit): procedural heightfield terrain
-  (FastNoiseLite), water plane, sky/fog/sun, an orbit camera. Confirms the
-  toolchain runs and the terrain approach reads well.
-- **G2 — a village**: a few buildings (placeholder meshes / CSG or imported),
-  a totem, placed on the terrain; static for now.
-- **G3 — villagers**: CharacterBody3D people wandering with NavigationServer,
-  a couple of jobs (gather wood/food), day/night.
-- **G4 — the hand**: pick up / drop / throw props and villagers (built-in
-  physics + a grab raycast), the core B&W feel.
-- **G5 — worship & belief**: totem → worshippers → mana; the belief number.
-- **G6 — the rival & conversion**, then **G7 — miracles**, **G8 — save/UI
-  shell**. These mirror the C++ milestones but built the Godot way.
+### P1b — standalone headless test/CLI binary (next, verifiable here)
+Extract `worldChecksum` / `runHeadless` / `runMatch` from `main.cpp` into
+`SimCore.cpp`; add a `godgame_headless` binary that links **only**
+`godgame_sim` (+ `Sound.cpp` for test [20]). Makes the determinism proofs
+the engine-free CI gate — faster than booting Godot, and it never touches
+the view.
 
-## 4. Mapping the C++ systems onto Godot (reference)
+### P2 — the `godot-cpp` GDExtension bridge (author here, compile locally)
+One bridge `Node3D` owns a `World` by value. Drive `world.update(1.0f/60.0f)`
+from a **fixed accumulator inside `_physics_process`** (never `_process`,
+never Godot's `delta`; loop the fixed step for the F4 sim-speed feature).
+Read sim state each frame; convert `glm → Vector3` **outbound only**. The
+bridge does **zero** sim arithmetic — no Godot `Variant`/`Transform3D` math,
+`RandomNumberGenerator`, `PhysicsServer`, `NavigationServer`, or `Timer`
+touches anything that reaches the checksum or a save. Keep `Hand`'s own
+ray-vs-heightfield pick (do not adopt Godot colliders for input).
 
-| C++ system | Godot-native approach |
+### P3 — the render layer (Godot, Compatibility renderer)
+Marshal packed transforms to `MultiMesh` via `RenderingServer` (scale is
+tiny: pop cap 24, a few hundred props). Terrain from `Terrain`'s heightfield
+→ `ArrayMesh`. Port the M9 look with Godot's own shadows/lights/water. Draw
+paths read sim state; they never write it.
+
+### P4 — the shell (Godot Control nodes)
+Menus/HUD/editor as `Control` + `Theme`, driven by the same
+`World`/`GodAI`/`savefile::` state. `.gmap`/`.sav` keep their byte formats
+(the C++ writers stay authoritative).
+
+### P5 — audio & input device layer
+Re-author the M12 device/mixer on Godot audio buses + `AudioStreamPlayer3D`,
+fed by the same `World::events` seam. `snd::bake()` synthesis can stay
+(procedural) or bake to `.wav`. Input events map to the existing `Hand`
+verbs at the bridge.
+
+## 3. C++ → Godot mapping (reference)
+
+| C++ | Godot (view only; sim stays C++) |
 |---|---|
-| `Terrain` heightfield | FastNoiseLite → ArrayMesh (or HeightMapShape3D for collision) |
-| `MeshData` procedural models | build with `SurfaceTool`, or import glTF later |
-| villager steering + physics | CharacterBody3D + NavigationAgent3D |
-| the hand (`Hand`) | raycast pick + reparent, `apply_impulse` for throws |
-| `World::events` → sound/effects | Godot signals + AudioStreamPlayer3D + GPUParticles |
-| M9 shadows/lights/water | Environment + DirectionalLight3D + OmniLight3D + water shader |
-| M7 menus/HUD (pixel font) | Control nodes + Theme |
-| `.gmap`/`.sav` | `Resource` + `ResourceSaver`, or keep a custom binary writer |
-| M12 sound synth | AudioStreamGenerator (keep the synth) or baked `.wav` |
-| M10 B&W overlay loaders | port the LND/L3D/G3D/DXT parsers to GDScript or a GDExtension |
+| `Terrain` heightfield | `ArrayMesh` + `HeightMapShape3D` (visual/collision only) |
+| `MeshData` builders | marshal to `ArrayMesh`/`MultiMesh` |
+| `World::events` seam | drive `AudioStreamPlayer3D` + `GPUParticles3D` |
+| M9 shadows/lights/water | `Environment` + `DirectionalLight3D` + `OmniLight3D` + water shader |
+| M7 menus/HUD (pixel font) | `Control` nodes + `Theme` |
+| `.gmap`/`.sav` writers | unchanged C++ (`mapfile::`/`savefile::`) |
+| M12 synth + mixer | `AudioStreamGenerator`/buses (keep synth) |
+| `bw` overlay loaders | unchanged C++, called through the bridge |
 
-## 5. Rework-back list — the systems that need attention *later*
+## 4. What must never regress
 
-These are the things we deliberately drop for native-first and re-introduce
-as focused passes, each with its own plan:
-
-1. **Determinism / lockstep.** Godot's physics and nav are not bit-exact or
-   cross-platform reproducible. When we want the checksum, the
-   continue-in-lockstep save, and the AI-vs-AI balance sweeps back, the
-   rework is: pull the movement/collision of *gameplay-relevant* actors out
-   of Godot physics into a deterministic fixed-step core (ported from the
-   C++ sim, in GDScript or a C#/GDExtension module), keeping Godot physics
-   only for cosmetic debris. Decide this when balance tooling matters again.
-2. **The headless self-test suite.** Our 260-check C++ suite doesn't port
-   directly. Rework: GdUnit4/GUT for GDScript logic + `godot --headless` in
-   CI. Weaker than the C++ suite until the deterministic core (1) exists.
-3. **Complete-state save + map editor.** Depends on (1) for the lockstep
-   guarantee; until then, saves are best-effort, not bit-exact.
-4. **The B&W runtime overlay (M10).** The clean-room loaders port to
-   GDScript/GDExtension; the invariant (asset bytes never shipped, read from
-   the owner's install at runtime) is preserved by architecture, unchanged.
-5. **Procedural audio (M12).** Reimplement the synth on AudioStreamGenerator,
-   or bake the samples to `.wav` at build time. Positional/ambience via buses.
-6. **llvmpipe / minimum-hardware.** Forward+ wants a GPU; if software-render
-   playability matters, switch the renderer to Compatibility (GL ES 3).
-
-## 6. Open cross-checks
-
-- The scoping workflow (six-subsystem research + adversarial verify) will
-  land with an independent methodology; reconcile its corrections into §4/§5
-  when it does. Its live-doc research was blocked by the same egress policy,
-  so weight it as model-knowledge, not sourced.
-- First owner action: open `godot/` in Godot 4.x, press Play, confirm the
-  island renders and the camera orbits. Report anything that doesn't, and
-  we iterate from a proven-running base.
+The 260-check headless suite is the contract. Every phase keeps it green;
+the GDExtension is *added around* the sim, never *into* it. If a change
+would perturb `worldChecksum`, it belongs in the view, not the sim.
