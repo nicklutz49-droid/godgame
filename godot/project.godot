@@ -1,0 +1,10 @@
+; Godgame — native Godot rebuild. Minimal on purpose: Godot fills in
+; config/features (engine version + renderer) on first open in the editor.
+
+config_version=5
+
+[application]
+
+config/name="Godgame"
+run/main_scene="res://Main.tscn"
+config/description="Black & White inspired god game — native Godot rebuild (slice G1: the island)."

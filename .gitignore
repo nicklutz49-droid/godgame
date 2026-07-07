@@ -4,6 +4,11 @@ dist/
 maps/
 saves/
 out/
+godot/.godot/
+godot/.import/
+godot/android/
+godot/export_presets.cfg
+*.translation
 .cache/
 compile_commands.json
 .vs/
